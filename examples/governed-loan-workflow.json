@@ -26,7 +26,7 @@
       },
       "id": "2",
       "name": "AxonFlow Check Policy",
-      "type": "n8n-nodes-axonflow.axonFlow",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
       "typeVersion": 1,
       "position": [460, 300],
       "credentials": {
@@ -71,7 +71,7 @@
       },
       "id": "4",
       "name": "AxonFlow Wait for Approval",
-      "type": "n8n-nodes-axonflow.axonFlow",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
       "typeVersion": 1,
       "position": [940, 460],
       "credentials": {
@@ -123,7 +123,7 @@
       },
       "id": "7",
       "name": "AxonFlow Record Decision",
-      "type": "n8n-nodes-axonflow.axonFlow",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
       "typeVersion": 1,
       "position": [1660, 300],
       "credentials": {
@@ -147,7 +147,7 @@
       },
       "id": "8",
       "name": "AxonFlow Audit Log (Error)",
-      "type": "n8n-nodes-axonflow.axonFlow",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
       "typeVersion": 1,
       "position": [1660, 600],
       "credentials": {

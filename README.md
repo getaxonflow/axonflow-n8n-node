@@ -2,7 +2,7 @@
 
 AxonFlow API integration for [n8n](https://n8n.io). Call the AxonFlow policy and HITL endpoints directly from your n8n workflows.
 
-[![npm version](https://img.shields.io/npm/v/n8n-nodes-axonflow)](https://www.npmjs.com/package/n8n-nodes-axonflow)
+[![npm version](https://img.shields.io/npm/v/@axonflow/n8n-nodes-axonflow)](https://www.npmjs.com/package/@axonflow/n8n-nodes-axonflow)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## What it does
@@ -23,14 +23,14 @@ Plus a single `AxonFlow API` credential type holding the endpoint + Basic-auth (
 ### n8n GUI (self-hosted)
 
 1. **Settings > Community Nodes > Install.**
-2. npm package name: `n8n-nodes-axonflow`.
+2. npm package name: `@axonflow/n8n-nodes-axonflow`.
 3. Restart n8n.
 
 ### Manual (self-hosted)
 
 ```bash
 cd ~/.n8n/custom
-npm install n8n-nodes-axonflow
+npm install @axonflow/n8n-nodes-axonflow
 # restart n8n
 ```
 

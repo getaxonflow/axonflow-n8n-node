@@ -25,15 +25,15 @@ jobs:
             exit 1
           fi
           {
-            echo "## n8n-nodes-axonflow v${VERSION}"
+            echo "## @axonflow/n8n-nodes-axonflow v${VERSION}"
             echo ""
             echo "### Installation"
             echo ""
             echo '```bash'
-            echo "npm install n8n-nodes-axonflow@${VERSION}"
+            echo "npm install @axonflow/n8n-nodes-axonflow@${VERSION}"
             echo '```'
             echo ""
-            echo "Or install via n8n GUI: **Settings > Community Nodes > Install >** \`n8n-nodes-axonflow\`."
+            echo "Or install via n8n GUI: **Settings > Community Nodes > Install >** \`@axonflow/n8n-nodes-axonflow\`."
             echo ""
             cat /tmp/release-body.md
           } > /tmp/release-body-final.md
@@ -81,8 +81,6 @@ jobs:
 
     - name: Publish to npm
       run: npm publish --provenance --access public
-      env:
-        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   create-release:
     needs: [preflight, publish]
@@ -120,13 +118,13 @@ jobs:
       run: |
         VERSION=${{ steps.version.outputs.VERSION }}
         for i in 1 2 3 4 5; do
-          echo "Attempt $i: Checking npm for n8n-nodes-axonflow@${VERSION}..."
-          if npm view n8n-nodes-axonflow@${VERSION} version 2>/dev/null | grep -q "${VERSION}"; then
-            echo "SUCCESS: n8n-nodes-axonflow@${VERSION} is available on npm"
+          echo "Attempt $i: Checking npm for @axonflow/n8n-nodes-axonflow@${VERSION}..."
+          if npm view @axonflow/n8n-nodes-axonflow@${VERSION} version 2>/dev/null | grep -q "${VERSION}"; then
+            echo "SUCCESS: @axonflow/n8n-nodes-axonflow@${VERSION} is available on npm"
             exit 0
           fi
           echo "Not yet available, waiting 30 seconds..."
           sleep 30
         done
-        echo "FAILURE: n8n-nodes-axonflow@${VERSION} not found on npm after 5 attempts"
+        echo "FAILURE: @axonflow/n8n-nodes-axonflow@${VERSION} not found on npm after 5 attempts"
         exit 1
