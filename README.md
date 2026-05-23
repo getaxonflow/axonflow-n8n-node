@@ -79,8 +79,8 @@ Import in n8n: **Workflows > Import from File >** `governed-loan-workflow.json`.
 ## Build from source
 
 ```bash
-git clone https://github.com/getaxonflow/n8n-nodes-axonflow.git
-cd n8n-nodes-axonflow
+git clone https://github.com/getaxonflow/axonflow-n8n-node.git
+cd axonflow-n8n-node
 npm install
 npm run build       # tsc > dist/
 npm run lint

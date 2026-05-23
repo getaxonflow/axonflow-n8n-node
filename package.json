@@ -9,7 +9,7 @@
     "hitl"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/getaxonflow/n8n-nodes-axonflow",
+  "homepage": "https://github.com/getaxonflow/axonflow-n8n-node",
   "author": {
     "name": "AxonFlow",
     "email": "hello@getaxonflow.com",
@@ -17,10 +17,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/getaxonflow/n8n-nodes-axonflow.git"
+    "url": "git+https://github.com/getaxonflow/axonflow-n8n-node.git"
   },
   "bugs": {
-    "url": "https://github.com/getaxonflow/n8n-nodes-axonflow/issues"
+    "url": "https://github.com/getaxonflow/axonflow-n8n-node/issues"
   },
   "engines": {
     "node": ">=18.10"
