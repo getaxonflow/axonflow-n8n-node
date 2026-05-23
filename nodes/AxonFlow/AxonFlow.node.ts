@@ -284,6 +284,15 @@ export class AxonFlow implements INodeType {
 					'Maps to expires_in_seconds on the AxonFlow approval. Defaults to 24h.',
 			},
 			{
+				displayName: 'Notify URL',
+				name: 'notifyUrl',
+				type: 'string',
+				default: '',
+				displayOptions: { show: { operation: ['waitForApproval'] } },
+				description:
+					'Webhook URL that AxonFlow POSTs to when the approval is decided (v8.1.0+). Point this at an n8n Wait node webhook URL to auto-resume the workflow on approval or rejection.',
+			},
+			{
 				displayName: 'Request Context (JSON)',
 				name: 'requestContext',
 				type: 'json',
@@ -355,6 +364,7 @@ export class AxonFlow implements INodeType {
 								body: {
 									tool_name: this.getNodeParameter('toolName', i) as string,
 									tool_type: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
+									user_id: String(credentials.userToken || ''),
 									workflow_id: this.getNodeParameter('workflowId', i) as string,
 									step_id: this.getNodeParameter('stepId', i) as string,
 									input: parseJsonParam(
@@ -372,6 +382,27 @@ export class AxonFlow implements INodeType {
 
 					case 'waitForApproval': {
 						const limitWaitTime = this.getNodeParameter('limitWaitTime', i) as number;
+						const notifyUrl = this.getNodeParameter('notifyUrl', i, '') as string;
+						const hitlBody: IDataObject = {
+							client_id: clientId,
+							user_id: String(credentials.userToken || ''),
+							original_query: this.getNodeParameter('originalQuery', i) as string,
+							request_type: this.getNodeParameter('requestType', i) as string,
+							request_context: parseJsonParam(
+								this.getNodeParameter('requestContext', i, '{}') as string | object,
+							),
+							triggered_policy_id: this.getNodeParameter('triggeredPolicyId', i) as string,
+							triggered_policy_name: this.getNodeParameter(
+								'triggeredPolicyName',
+								i,
+							) as string,
+							trigger_reason: this.getNodeParameter('triggerReason', i) as string,
+							severity: this.getNodeParameter('severity', i) as string,
+							expires_in_seconds: limitWaitTime,
+						};
+						if (notifyUrl) {
+							hitlBody.notify_url = notifyUrl;
+						}
 						const createResp = (await this.helpers.httpRequestWithAuthentication.call(
 							this,
 							'axonFlowApi',
@@ -380,22 +411,7 @@ export class AxonFlow implements INodeType {
 								method: 'POST',
 								path: '/api/v1/hitl/queue',
 								idempotencyKey,
-								body: {
-									client_id: clientId,
-									original_query: this.getNodeParameter('originalQuery', i) as string,
-									request_type: this.getNodeParameter('requestType', i) as string,
-									request_context: parseJsonParam(
-										this.getNodeParameter('requestContext', i, '{}') as string | object,
-									),
-									triggered_policy_id: this.getNodeParameter('triggeredPolicyId', i) as string,
-									triggered_policy_name: this.getNodeParameter(
-										'triggeredPolicyName',
-										i,
-									) as string,
-									trigger_reason: this.getNodeParameter('triggerReason', i) as string,
-									severity: this.getNodeParameter('severity', i) as string,
-									expires_in_seconds: limitWaitTime,
-								},
+								body: hitlBody,
 							}),
 						)) as IDataObject;
 

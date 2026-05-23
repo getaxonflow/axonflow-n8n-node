@@ -46,8 +46,130 @@ jobs:
           path: /tmp/release-body-final.md
           retention-days: 1
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update version in package.json
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          npm version ${VERSION} --no-git-tag-version --allow-same-version
+          echo "Updated version to ${VERSION}"
+          grep '"version"' package.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-output
+          path: |
+            dist/
+            package.json
+            package-lock.json
+            CHANGELOG.md
+            LICENSE
+            README.md
+            examples/
+          retention-days: 1
+
+  runtime-e2e:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Start E2E stack
+        working-directory: runtime-e2e
+        run: docker compose up -d
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for axonflow-agent..."
+          for i in $(seq 1 90); do
+            if curl -sf -o /dev/null --max-time 2 "http://localhost:18080/health" 2>/dev/null; then
+              echo "axonflow-agent healthy (${i}s)"
+              break
+            fi
+            if [ "$i" -eq 90 ]; then echo "FATAL: agent not healthy"; exit 1; fi
+            sleep 1
+          done
+          echo "Waiting for n8n..."
+          for i in $(seq 1 90); do
+            if curl -sf -o /dev/null --max-time 2 "http://localhost:15678/healthz" 2>/dev/null; then
+              echo "n8n healthy (${i}s)"
+              break
+            fi
+            if [ "$i" -eq 90 ]; then echo "FATAL: n8n not healthy"; exit 1; fi
+            sleep 1
+          done
+
+      - name: Install node into n8n
+        run: bash runtime-e2e/_lib/install-node-into-n8n.sh
+
+      - name: Run E2E tests
+        working-directory: runtime-e2e
+        run: |
+          chmod +x run-all.sh
+          ./run-all.sh --skip-up
+
+      - name: Collect logs on failure
+        if: failure()
+        working-directory: runtime-e2e
+        run: |
+          docker compose logs > /tmp/e2e-docker-logs.txt 2>&1 || true
+          echo "=== Docker logs ==="
+          tail -200 /tmp/e2e-docker-logs.txt
+
+      - name: Tear down E2E stack
+        if: always()
+        working-directory: runtime-e2e
+        run: docker compose down -v
+
   publish:
-    needs: preflight
+    needs: [preflight, lint, build-and-test, runtime-e2e]
     runs-on: ubuntu-latest
 
     steps:
@@ -72,9 +194,6 @@ jobs:
 
     - name: Install dependencies
       run: npm ci
-
-    - name: Run tests
-      run: npm test
 
     - name: Build
       run: npm run build
