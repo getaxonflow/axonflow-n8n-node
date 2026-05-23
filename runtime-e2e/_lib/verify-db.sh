@@ -10,7 +10,8 @@
 #   ./verify-db.sh hitl-field <approval_id> <field> <expected>
 #   ./verify-db.sh idempotency-row <key>
 #   ./verify-db.sh idempotency-count <key> <expected>
-#   ./verify-db.sh mcp-check-input-exists <connector_type>
+#   ./verify-db.sh mcp-audit-exists <connector_name>
+#   ./verify-db.sh audit-log-exists <client_id>
 #
 # Environment:
 #   DB_HOST (default: localhost)
@@ -155,25 +156,32 @@ case "${1:-}" in
     exit 0
     ;;
 
-  mcp-check-input-exists)
-    connector_type="${2:?usage: verify-db.sh mcp-check-input-exists <connector_type>}"
-    validate_safe_string "$connector_type" "connector_type"
-    # The check-input endpoint records to mcp_audit_log or similar table.
-    # In community mode, the agent processes the request but may not persist
-    # an audit row in the same way. Verify the agent accepted the request
-    # by checking that the HTTP response was successful (done by the caller).
-    # For DB verification, check if the connector_type appears in any audit table.
-    count=$(psql_q -c "SELECT COUNT(*) FROM audit_tool_calls WHERE tool_name LIKE '%$connector_type%'" 2>/dev/null || echo "0")
-    if [ "$count" -ge 1 ]; then
-      echo "OK: found $count audit row(s) referencing connector_type=$connector_type"
-    else
-      echo "INFO: no audit rows for connector_type=$connector_type (check-input may not persist to audit_tool_calls in community mode)"
+  mcp-audit-exists)
+    connector_name="${2:?usage: verify-db.sh mcp-audit-exists <connector_name>}"
+    validate_safe_string "$connector_name" "connector_name"
+    count=$(psql_q -c "SELECT COUNT(*) FROM mcp_query_audits WHERE connector_name = '$connector_name'")
+    if [ "$count" -eq 0 ]; then
+      echo "FAIL: no mcp_query_audits row for connector=$connector_name"
+      exit 1
     fi
+    echo "OK: mcp_query_audits has $count row(s) for connector=$connector_name"
+    exit 0
+    ;;
+
+  audit-log-exists)
+    client_id="${2:?usage: verify-db.sh audit-log-exists <client_id>}"
+    validate_safe_string "$client_id" "client_id"
+    count=$(psql_q -c "SELECT COUNT(*) FROM audit_logs WHERE client_id = '$client_id'")
+    if [ "$count" -eq 0 ]; then
+      echo "FAIL: no audit_logs row for client=$client_id"
+      exit 1
+    fi
+    echo "OK: audit_logs has $count row(s) for client=$client_id"
     exit 0
     ;;
 
   *)
-    echo "Usage: $0 {audit-row-exists|audit-row-has-user-id|audit-row-count|hitl-row|hitl-count|hitl-field|idempotency-row|idempotency-count|mcp-check-input-exists} ..."
+    echo "Usage: $0 {audit-row-exists|audit-row-has-user-id|audit-row-count|hitl-row|hitl-count|hitl-field|idempotency-row|idempotency-count|mcp-audit-exists|audit-log-exists} ..."
     exit 2
     ;;
 esac

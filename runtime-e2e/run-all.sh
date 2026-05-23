@@ -106,13 +106,15 @@ run_probe() {
   log "--- Probe: $probe_name ---"
 
   if [ ! -d "$probe_dir" ]; then
-    log "SKIP: $probe_dir not found"
+    log "FAIL: $probe_dir not found — all probes must exist"
+    record "$probe_name" FAIL "probe directory missing"
     return 0
   fi
 
   local test_script="$probe_dir/test.sh"
   if [ ! -f "$test_script" ]; then
-    log "SKIP: no test.sh in $probe_dir"
+    log "FAIL: no test.sh in $probe_dir — all probes must have a test script"
+    record "$probe_name" FAIL "test.sh missing"
     return 0
   fi
 
