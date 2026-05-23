@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-05-24
+
+### Fixed (caught by runtime E2E)
+
+- **Record Decision / Audit Log missing `user_id`** — the `recordDecision` and `auditLog` operations did not include `user_id` in the request body sent to `/api/v1/audit/tool-call`. Audit rows were not attributed to the authenticated user. Now sends `user_id` derived from the credential's User Token.
+- **Wait for Approval missing `user_id`** — the `waitForApproval` operation did not include `user_id` in the HITL queue creation body. Approval rows lacked user attribution. Now sends `user_id` derived from the credential's User Token.
+- **Wait for Approval missing `notify_url` parameter** — the node created HITL approval requests but had no way to set `notify_url`, so the platform could not POST approval decisions back to n8n automatically. Added an optional Notify URL parameter that accepts an n8n Wait node webhook URL for auto-resume on approval or rejection (requires platform >= 8.1.0).
+
+### Added
+
+- **Runtime E2E test suite** (`runtime-e2e/`) — real-framework tests that install the built node package into a live n8n instance backed by a real AxonFlow Agent, then exercise all four operations end-to-end. Six test scenarios: node installation, check-policy, record-decision + audit-row verification, wait-for-approval + HITL queue verification, idempotency-key deduplication, and failure-mode open-vs-closed behavior.
+- **Release workflow runtime-e2e gate** — the `release.yml` workflow now runs the runtime E2E suite after build and before npm publish. Releases are blocked if any E2E test fails.
+
 ## [1.0.0] - 2026-05-23
 
 First standalone release. Previously shipped as an example inside the AxonFlow platform repository.

@@ -1,0 +1,45 @@
+{
+  "name": "E2E: Wait for Approval",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "waitForApproval",
+        "requestType": "workflow_step",
+        "originalQuery": "Approve loan L-E2E-001",
+        "triggeredPolicyId": "high-value-loan",
+        "triggeredPolicyName": "High Value Loan",
+        "triggerReason": "Amount exceeds threshold",
+        "severity": "high",
+        "limitWaitTime": 3600,
+        "requestContext": "{\"loan_id\": \"L-E2E-001\"}"
+      },
+      "id": "2",
+      "name": "AxonFlow Wait for Approval",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "1",
+          "name": "AxonFlow E2E"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{"node": "AxonFlow Wait for Approval", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

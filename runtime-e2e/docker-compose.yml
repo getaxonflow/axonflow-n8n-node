@@ -1,0 +1,121 @@
+# Runtime E2E harness for @axonflow/n8n-nodes-axonflow
+#
+# Brings up: Postgres + Redis + AxonFlow Agent (community) + n8n
+#
+# Usage:
+#   cd runtime-e2e
+#   docker compose up -d
+#   ./_lib/install-node-into-n8n.sh
+#   ./run-all.sh
+#   docker compose down -v
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: e2e-postgres
+    environment:
+      POSTGRES_USER: axonflow
+      POSTGRES_PASSWORD: localdev123
+      POSTGRES_DB: axonflow
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axonflow -d axonflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - e2e-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: e2e-redis
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - e2e-network
+
+  axonflow-agent:
+    image: ghcr.io/getaxonflow/axonflow-agent:latest
+    container_name: e2e-agent
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: axonflow
+      DATABASE_USER: axonflow
+      DATABASE_PASSWORD: localdev123
+      DATABASE_SSLMODE: disable
+      DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
+      AXONFLOW_DB_USE_APP_ROLE: "false"
+      AXONFLOW_CLIENT_ID: ${AXONFLOW_CLIENT_ID:-e2e-n8n-test}
+      ORG_ID: ${ORG_ID:-e2e-n8n-test}
+      DEPLOYMENT_KIND: dev
+      PORT: 8080
+      ENVIRONMENT: development
+      LOG_LEVEL: debug
+      DEPLOYMENT_MODE: community
+      AXONFLOW_VERSION: "8.1.0"
+      REDIS_URL: redis://redis:6379
+      AXONFLOW_TELEMETRY: "off"
+      CI: "true"
+    ports:
+      - "18080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 45s
+    networks:
+      - e2e-network
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: e2e-n8n
+    environment:
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      N8N_HOST: localhost
+      WEBHOOK_URL: http://n8n:5678/
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_PUBLIC_API_DISABLED: "false"
+      N8N_COMMUNITY_PACKAGES_ENABLED: "true"
+      EXECUTIONS_PROCESS: main
+      GENERIC_TIMEZONE: UTC
+      # Disable auth for E2E testing so API calls don't need credentials
+      N8N_BASIC_AUTH_ACTIVE: "false"
+      N8N_USER_MANAGEMENT_DISABLED: "true"
+    ports:
+      - "15678:5678"
+    volumes:
+      - n8n-data:/home/node/.n8n
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:5678/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - e2e-network
+
+volumes:
+  n8n-data:
+
+networks:
+  e2e-network:
+    driver: bridge

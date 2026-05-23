@@ -133,6 +133,7 @@ test('recordDecision posts to /api/v1/audit/tool-call with success=true + tool_t
 	assert.equal(req.headers?.['Idempotency-Key'], 'idem-decision-1');
 	assert.equal(req.body?.tool_name, 'approve_loan');
 	assert.equal(req.body?.tool_type, 'n8n_decision');
+	assert.equal(req.body?.user_id, 'utok-xyz');
 	assert.equal(req.body?.success, true);
 	assert.deepEqual(req.body?.input, { loan_id: 'L-001' });
 	assert.deepEqual(req.body?.output, { status: 'approved' });
@@ -156,6 +157,7 @@ test('auditLog posts to /api/v1/audit/tool-call with tool_type=n8n_audit', async
 	const req = requests[0];
 	assert.equal(req.url, 'https://axonflow.local/api/v1/audit/tool-call');
 	assert.equal(req.body?.tool_type, 'n8n_audit');
+	assert.equal(req.body?.user_id, 'utok-xyz');
 	assert.equal(req.body?.success, false);
 	assert.equal(req.body?.error_message, 'downstream timeout');
 });
@@ -189,14 +191,75 @@ test('waitForApproval posts to /api/v1/hitl/queue and unwraps approval_id from d
 	const req = requests[0];
 	assert.equal(req.url, 'https://axonflow.local/api/v1/hitl/queue');
 	assert.equal(req.headers?.['Idempotency-Key'], 'idem-approval-1');
+	assert.equal(req.body?.user_id, 'utok-xyz');
 	assert.equal(req.body?.expires_in_seconds, 3600);
 	assert.equal(req.body?.severity, 'high');
 	assert.deepEqual(req.body?.request_context, { loan_id: 'L-001' });
+	// notify_url not provided → should NOT be present in body
+	assert.equal(req.body?.notify_url, undefined);
 
 	const out = (result as Array<Array<{ json: Record<string, unknown> }>>)[0][0].json;
 	assert.equal(out.approval_id, 'approval-uuid-1');
 	assert.equal(out.status, 'pending');
 	assert.match(String(out.resume_hint), /Wait node/);
+});
+
+test('waitForApproval includes notify_url when provided', async () => {
+	const { requests } = await runExecute({
+		params: {
+			operation: 'waitForApproval',
+			idempotencyKey: 'idem-notify-1',
+			originalQuery: 'Approve transfer',
+			requestType: 'workflow_step',
+			triggeredPolicyId: 'high-value',
+			triggeredPolicyName: 'High Value',
+			triggerReason: 'amount > $1000',
+			severity: 'high',
+			limitWaitTime: 3600,
+			requestContext: '{}',
+			notifyUrl: 'http://n8n:5678/webhook/approval-resume',
+		},
+		responses: [
+			{
+				success: true,
+				data: {
+					id: 'approval-uuid-2',
+					status: 'pending',
+					expires_at: '2026-05-24T00:00:00Z',
+				},
+			},
+		],
+	});
+
+	const req = requests[0];
+	assert.equal(req.body?.notify_url, 'http://n8n:5678/webhook/approval-resume');
+	assert.equal(req.body?.user_id, 'utok-xyz');
+});
+
+test('waitForApproval omits notify_url when empty string (not sent as empty key)', async () => {
+	const { requests } = await runExecute({
+		params: {
+			operation: 'waitForApproval',
+			idempotencyKey: 'idem-no-notify',
+			originalQuery: 'Approve something',
+			requestType: 'workflow_step',
+			triggeredPolicyId: 'p',
+			triggeredPolicyName: 'P',
+			triggerReason: 'r',
+			severity: 'low',
+			limitWaitTime: 60,
+			requestContext: '{}',
+			notifyUrl: '',
+		},
+		responses: [
+			{
+				success: true,
+				data: { id: 'a', status: 'pending' },
+			},
+		],
+	});
+
+	assert.equal(requests[0].body?.notify_url, undefined);
 });
 
 test('idempotency-key default falls back to executionId-itemIndex-nodeName when not provided', async () => {
@@ -335,6 +398,7 @@ test('every operation defaults to the executionId-itemIndex-nodeName Idempotency
 				severity: 'medium',
 				limitWaitTime: 60,
 				requestContext: '{}',
+				notifyUrl: '',
 			},
 			responses: [{ success: true, data: { id: 'a', status: 'pending' } }],
 		},

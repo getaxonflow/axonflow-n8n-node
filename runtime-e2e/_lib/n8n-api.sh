@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# n8n-api.sh — Helper functions for interacting with n8n's REST API.
+#
+# Source this file from test scripts:
+#   source "$LIB_DIR/n8n-api.sh"
+#
+# Requires: N8N_URL environment variable (default: http://localhost:15678)
+
+N8N_URL="${N8N_URL:-http://localhost:15678}"
+
+# n8n requires an owner account to be set up before the API can be used.
+# This function creates the owner if not already set up, then obtains
+# an API key (or cookie) for subsequent calls.
+_N8N_COOKIE_JAR="${WORK:-/tmp}/.n8n-cookies"
+
+n8n_setup_owner() {
+  # Check if owner is already set up
+  local settings
+  settings=$(curl -sf "$N8N_URL/api/v1/settings" 2>/dev/null || echo '{}')
+
+  if echo "$settings" | grep -q '"userManagement"' 2>/dev/null; then
+    # Try to set up the owner
+    curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/api/v1/owner/setup" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "email": "e2e@axonflow.local",
+        "firstName": "E2E",
+        "lastName": "Test",
+        "password": "e2e-test-password-123!"
+      }' > /dev/null 2>&1 || true
+  fi
+
+  # Log in to get a session cookie
+  curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/api/v1/login" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "email": "e2e@axonflow.local",
+      "password": "e2e-test-password-123!"
+    }' > /dev/null 2>&1 || true
+}
+
+# Create an AxonFlow credential in n8n.
+# Args: <name> <endpoint> <client_id> <user_token>
+# Returns: credential ID on stdout
+n8n_create_credential() {
+  local name="$1" endpoint="$2" client_id="$3" user_token="$4"
+  local resp
+  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/api/v1/credentials" \
+    -H "Content-Type: application/json" \
+    -d "$(cat <<CRED_EOF
+{
+  "name": "$name",
+  "type": "axonFlowApi",
+  "data": {
+    "endpoint": "$endpoint",
+    "clientId": "$client_id",
+    "userToken": "$user_token"
+  }
+}
+CRED_EOF
+)")
+  echo "$resp" | jq -r '.id'
+}
+
+# Import a workflow from a JSON file.
+# Args: <workflow_json_file> [credential_id]
+# Returns: workflow ID on stdout
+n8n_import_workflow() {
+  local workflow_file="$1"
+  local cred_id="${2:-}"
+
+  local workflow_json
+  workflow_json=$(cat "$workflow_file")
+
+  # If a credential ID is provided, patch it into the workflow
+  if [ -n "$cred_id" ]; then
+    workflow_json=$(echo "$workflow_json" | jq --arg cid "$cred_id" '
+      .nodes |= map(
+        if .credentials?.axonFlowApi then
+          .credentials.axonFlowApi.id = $cid
+        else . end
+      )
+    ')
+  fi
+
+  local resp
+  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/api/v1/workflows" \
+    -H "Content-Type: application/json" \
+    -d "$workflow_json")
+  echo "$resp" | jq -r '.id'
+}
+
+# Activate a workflow.
+# Args: <workflow_id>
+n8n_activate_workflow() {
+  local workflow_id="$1"
+  curl -sf -b "$_N8N_COOKIE_JAR" -X PATCH "$N8N_URL/api/v1/workflows/$workflow_id" \
+    -H "Content-Type: application/json" \
+    -d '{"active": true}' > /dev/null
+}
+
+# Execute a workflow via n8n CLI inside the container.
+# Args: <workflow_id>
+# Returns: execution ID on stdout (or "manual" if not available)
+n8n_execute_workflow() {
+  local workflow_id="$1"
+  # Use the REST API to run the workflow manually
+  local resp
+  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST \
+    "$N8N_URL/api/v1/workflows/$workflow_id/run" \
+    -H "Content-Type: application/json" \
+    -d '{}' 2>/dev/null || echo '{}')
+  echo "$resp" | jq -r '.data?.executionId // .executionId // "unknown"'
+}
+
+# Trigger a webhook-based workflow.
+# Args: <webhook_path> [body_json]
+n8n_trigger_webhook() {
+  local webhook_path="$1"
+  local body="${2:-'{\"test\": true}'}"
+  curl -sf -X POST "$N8N_URL/webhook/$webhook_path" \
+    -H "Content-Type: application/json" \
+    -d "$body"
+}
+
+# Get execution result.
+# Args: <execution_id>
+n8n_get_execution() {
+  local execution_id="$1"
+  curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/api/v1/executions/$execution_id"
+}
+
+# Wait for an execution to finish (poll status).
+# Args: <execution_id> [timeout_seconds]
+n8n_wait_execution() {
+  local execution_id="$1"
+  local timeout="${2:-30}"
+  for i in $(seq 1 "$timeout"); do
+    local status
+    status=$(n8n_get_execution "$execution_id" | jq -r '.finished // .status // "unknown"')
+    if [ "$status" = "true" ] || [ "$status" = "success" ] || [ "$status" = "error" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "TIMEOUT: execution $execution_id did not finish in ${timeout}s" >&2
+  return 1
+}

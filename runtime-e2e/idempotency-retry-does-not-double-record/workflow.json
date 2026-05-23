@@ -1,0 +1,45 @@
+{
+  "name": "E2E: Idempotency Retry",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "recordDecision",
+        "idempotencyKey": "e2e-fixed-idem-key",
+        "toolName": "e2e_idem_tool",
+        "workflowId": "wf-idem-test",
+        "stepId": "idem-step",
+        "auditInput": "{\"test\": true}",
+        "auditOutput": "{\"result\": \"ok\"}",
+        "auditSuccess": true,
+        "auditErrorMessage": ""
+      },
+      "id": "2",
+      "name": "AxonFlow Record (Idempotent)",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "1",
+          "name": "AxonFlow E2E"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{"node": "AxonFlow Record (Idempotent)", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

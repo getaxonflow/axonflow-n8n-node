@@ -1,0 +1,44 @@
+{
+  "name": "E2E: Record Decision",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "recordDecision",
+        "toolName": "e2e_approve_loan",
+        "workflowId": "wf-e2e-test",
+        "stepId": "record-decision-node",
+        "auditInput": "{\"loan_id\": \"L-E2E-001\"}",
+        "auditOutput": "{\"status\": \"approved\"}",
+        "auditSuccess": true,
+        "auditErrorMessage": ""
+      },
+      "id": "2",
+      "name": "AxonFlow Record Decision",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "1",
+          "name": "AxonFlow E2E"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{"node": "AxonFlow Record Decision", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
