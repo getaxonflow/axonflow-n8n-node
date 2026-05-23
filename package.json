@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc && node ./scripts/copy-assets.js",
     "lint": "eslint nodes credentials package.json",
-    "test": "node --test --import tsx 'test/**/*.test.ts'",
+    "test": "node --test --import tsx test/AxonFlow.node.test.ts test/AxonFlowApi.credentials.test.ts",
     "format": "prettier nodes credentials --write",
     "prepublishOnly": "npm run build"
   },
