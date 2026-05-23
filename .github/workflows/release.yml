@@ -1,0 +1,132 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract CHANGELOG section
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          awk -v ver="$VERSION" '$0 ~ "^## \\["ver"\\]" {p=1; next} p && /^## \[/ {exit} p {print}' CHANGELOG.md > /tmp/release-body.md
+          if [ ! -s /tmp/release-body.md ]; then
+            echo "::error::No CHANGELOG.md section found for version $VERSION — refusing to publish."
+            echo "::error::Add a '## [$VERSION] - YYYY-MM-DD' section to CHANGELOG.md and re-tag."
+            exit 1
+          fi
+          {
+            echo "## n8n-nodes-axonflow v${VERSION}"
+            echo ""
+            echo "### Installation"
+            echo ""
+            echo '```bash'
+            echo "npm install n8n-nodes-axonflow@${VERSION}"
+            echo '```'
+            echo ""
+            echo "Or install via n8n GUI: **Settings > Community Nodes > Install >** \`n8n-nodes-axonflow\`."
+            echo ""
+            cat /tmp/release-body.md
+          } > /tmp/release-body-final.md
+          echo "Release body: $(wc -l < /tmp/release-body-final.md) lines"
+
+      - name: Upload release body artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-body
+          path: /tmp/release-body-final.md
+          retention-days: 1
+
+  publish:
+    needs: preflight
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Use Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        registry-url: 'https://registry.npmjs.org'
+
+    - name: Extract version from tag
+      id: version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+    - name: Update version in package.json
+      run: |
+        VERSION=${{ steps.version.outputs.VERSION }}
+        npm version ${VERSION} --no-git-tag-version --allow-same-version
+        echo "Updated version to ${VERSION}"
+        grep '"version"' package.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run tests
+      run: npm test
+
+    - name: Build
+      run: npm run build
+
+    - name: Publish to npm
+      run: npm publish --provenance --access public
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  create-release:
+    needs: [preflight, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Download release body artifact
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: release-body
+        path: /tmp/release-body
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+      with:
+        name: Release ${{ github.ref_name }}
+        body_path: /tmp/release-body/release-body-final.md
+        generate_release_notes: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  verify-publish:
+    needs: [preflight, publish]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Extract version from tag
+      id: version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+    - name: Wait for npm propagation
+      run: sleep 30
+
+    - name: Verify package on npm
+      run: |
+        VERSION=${{ steps.version.outputs.VERSION }}
+        for i in 1 2 3 4 5; do
+          echo "Attempt $i: Checking npm for n8n-nodes-axonflow@${VERSION}..."
+          if npm view n8n-nodes-axonflow@${VERSION} version 2>/dev/null | grep -q "${VERSION}"; then
+            echo "SUCCESS: n8n-nodes-axonflow@${VERSION} is available on npm"
+            exit 0
+          fi
+          echo "Not yet available, waiting 30 seconds..."
+          sleep 30
+        done
+        echo "FAILURE: n8n-nodes-axonflow@${VERSION} not found on npm after 5 attempts"
+        exit 1
