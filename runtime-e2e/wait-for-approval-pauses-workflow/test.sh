@@ -2,23 +2,36 @@
 # Test: wait-for-approval-pauses-workflow
 #
 # Verifies that the Wait for Approval operation creates a HITL queue row
-# with the correct fields including user_id and optional notify_url.
+# with the correct fields including user_id, and that the polling sidecar
+# can approve it and the DB reflects the status change.
+#
+# ASSERT: queries hitl_approval_queue for row existence, field values,
+#         and post-approval status.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 AGENT_URL="${AGENT_URL:-http://localhost:18080}"
 
+export PGPASSWORD="${DB_PASSWORD:-localdev123}"
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-15432}"
+
 echo "=== wait-for-approval-pauses-workflow ==="
 
 USER_TOKEN="e2e-user-token"
+AUTH="Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)"
 
-# 1. Create a HITL queue entry with user_id (simulating the fixed node)
+# SETUP: clean any prior HITL test rows
+psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
+  -c "DELETE FROM hitl_approval_queue WHERE client_id = 'e2e-n8n-test'" 2>/dev/null || true
+
+# RUN 1: Create a HITL queue entry with user_id
 echo "Creating HITL queue entry with user_id..."
 RESP=$(curl -sf -X POST "$AGENT_URL/api/v1/hitl/queue" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)" \
-  -H "Idempotency-Key: e2e-hitl-test-1" \
+  -H "Authorization: $AUTH" \
+  -H "Idempotency-Key: e2e-hitl-test-$(date +%s)-1" \
   -d "{
     \"client_id\": \"e2e-n8n-test\",
     \"user_id\": \"$USER_TOKEN\",
@@ -30,7 +43,7 @@ RESP=$(curl -sf -X POST "$AGENT_URL/api/v1/hitl/queue" \
     \"trigger_reason\": \"Amount exceeds threshold\",
     \"severity\": \"high\",
     \"expires_in_seconds\": 3600
-  }" 2>/dev/null || echo '{"error":"hitl not available"}')
+  }")
 
 echo "HITL create response: $RESP"
 
@@ -38,59 +51,42 @@ echo "HITL create response: $RESP"
 APPROVAL_ID=$(echo "$RESP" | jq -r '.data.id // .data.request_id // .id // empty' 2>/dev/null || echo "")
 
 if [ -z "$APPROVAL_ID" ]; then
-  # HITL might not be available in community mode — this is expected
-  echo "INFO: HITL queue endpoint returned no approval ID (expected in community mode)"
-  echo "INFO: The node code is correct — it sends user_id and would send notify_url."
-  echo "PASS: wait-for-approval-pauses-workflow (community-mode: HITL not available, code path verified by unit tests)"
-  exit 0
+  echo "FAIL: HITL queue endpoint returned no approval ID"
+  exit 1
 fi
 
 echo "Approval ID: $APPROVAL_ID"
 
-# 2. Verify the HITL row exists in the DB
+# Allow async DB writes to flush
+sleep 2
+
+# ASSERT 1: HITL row exists in the DB
 echo "Verifying HITL row in database..."
 "$LIB_DIR/verify-db.sh" hitl-row "$APPROVAL_ID"
+
+# ASSERT 2: severity field matches
 "$LIB_DIR/verify-db.sh" hitl-field "$APPROVAL_ID" severity "high"
+
+# ASSERT 3: user_id field matches
 "$LIB_DIR/verify-db.sh" hitl-field "$APPROVAL_ID" user_id "$USER_TOKEN"
 
-# 3. Test with notify_url set
+# ASSERT 4: status is pending before approval
+"$LIB_DIR/verify-db.sh" hitl-field "$APPROVAL_ID" status "pending"
+
+# RUN 2: Approve the request using the polling sidecar
 echo ""
-echo "Creating HITL queue entry with notify_url..."
-RESP2=$(curl -sf -X POST "$AGENT_URL/api/v1/hitl/queue" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)" \
-  -H "Idempotency-Key: e2e-hitl-notify-test-1" \
-  -d "{
-    \"client_id\": \"e2e-n8n-test\",
-    \"user_id\": \"$USER_TOKEN\",
-    \"original_query\": \"Approve transfer T-E2E-001\",
-    \"request_type\": \"workflow_step\",
-    \"request_context\": {},
-    \"triggered_policy_id\": \"n8n-manual\",
-    \"triggered_policy_name\": \"n8n manual approval\",
-    \"trigger_reason\": \"Manual approval requested\",
-    \"severity\": \"medium\",
-    \"expires_in_seconds\": 1800,
-    \"notify_url\": \"http://n8n:5678/webhook/approval-resume\"
-  }" 2>/dev/null || echo '{"error":"hitl not available"}')
+echo "Approving the HITL request via sidecar..."
+USER_TOKEN="$USER_TOKEN" bash "$SCRIPT_DIR/polling-sidecar.sh" "$APPROVAL_ID" 15
 
-echo "HITL with notify_url response: $RESP2"
+# Allow async DB writes to flush
+sleep 2
 
-APPROVAL_ID2=$(echo "$RESP2" | jq -r '.data.id // .data.request_id // .id // empty' 2>/dev/null || echo "")
-if [ -n "$APPROVAL_ID2" ]; then
-  "$LIB_DIR/verify-db.sh" hitl-field "$APPROVAL_ID2" notify_url "http://n8n:5678/webhook/approval-resume"
-fi
+# ASSERT 5: status changed to approved
+echo "Verifying post-approval status..."
+"$LIB_DIR/verify-db.sh" hitl-field "$APPROVAL_ID" status "approved"
 
-# 4. Approve the first request to verify the polling sidecar pattern works
-echo ""
-echo "Approving the first HITL request..."
-APPROVE_RESP=$(curl -sf -X POST "$AGENT_URL/api/v1/hitl/queue/$APPROVAL_ID/approve" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)" \
-  -d '{"reviewer_email": "e2e@axonflow.local", "review_comment": "E2E test approval"}' \
-  2>/dev/null || echo '{"error":"approve failed"}')
-echo "Approve response: $APPROVE_RESP"
-
-"$LIB_DIR/verify-db.sh" hitl-field "$APPROVAL_ID" status "approved" || true
+# CLEANUP: remove test HITL rows
+psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
+  -c "DELETE FROM hitl_approval_queue WHERE client_id = 'e2e-n8n-test'" 2>/dev/null || true
 
 echo "PASS: wait-for-approval-pauses-workflow"

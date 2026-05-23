@@ -160,8 +160,15 @@ jobs:
       - name: Run E2E tests
         working-directory: runtime-e2e
         run: |
+          START_TIME=$(date +%s)
           chmod +x run-all.sh
           ./run-all.sh --skip-up
+          ELAPSED=$(($(date +%s) - START_TIME))
+          echo "Total runtime-e2e duration: ${ELAPSED}s"
+          if [ "$ELAPSED" -lt 60 ]; then
+            echo "::error::runtime-e2e completed in ${ELAPSED}s (< 60s floor) — suspect silent skip"
+            exit 1
+          fi
 
       - name: Collect logs on failure
         if: failure()

@@ -4,23 +4,35 @@
 # Verifies that the Record Decision operation sends the correct body to
 # /api/v1/audit/tool-call including user_id, and that the audit row
 # is persisted in the database.
+#
+# ASSERT: queries audit_tool_calls table for the tool_name, fails if absent.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 AGENT_URL="${AGENT_URL:-http://localhost:18080}"
 
+export PGPASSWORD="${DB_PASSWORD:-localdev123}"
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-15432}"
+
 echo "=== record-decision-writes-audit-row ==="
 
 TOOL_NAME="e2e-record-decision-$(date +%s)"
+AUDIT_TOOL_NAME="e2e-audit-log-$(date +%s)"
 USER_TOKEN="e2e-user-token"
+AUTH="Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)"
 
-# Call the audit endpoint directly (simulating what the n8n node does)
+# SETUP: clean any prior test rows
+psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
+  -c "DELETE FROM audit_tool_calls WHERE tool_name LIKE 'e2e-record-decision-%' OR tool_name LIKE 'e2e-audit-log-%'" 2>/dev/null || true
+
+# RUN 1: Post audit/tool-call with user_id (record decision)
 echo "Posting audit/tool-call with user_id..."
-RESP=$(curl -sf -X POST "$AGENT_URL/api/v1/audit/tool-call" \
+RESP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$AGENT_URL/api/v1/audit/tool-call" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)" \
-  -H "Idempotency-Key: e2e-record-decision-test-1" \
+  -H "Authorization: $AUTH" \
+  -H "Idempotency-Key: e2e-record-decision-test-$(date +%s)" \
   -d "{
     \"tool_name\": \"$TOOL_NAME\",
     \"tool_type\": \"n8n_decision\",
@@ -31,26 +43,20 @@ RESP=$(curl -sf -X POST "$AGENT_URL/api/v1/audit/tool-call" \
     \"output\": {\"status\": \"approved\"},
     \"success\": true,
     \"error_message\": \"\"
-  }" 2>/dev/null || echo '{"error":"agent unreachable"}')
+  }")
 
-echo "Agent response: $RESP"
-
-# Check response isn't an error
-if echo "$RESP" | jq -e '.error' > /dev/null 2>&1; then
-  ERR=$(echo "$RESP" | jq -r '.error')
-  if [ "$ERR" = "agent unreachable" ]; then
-    echo "FAIL: record-decision-writes-audit-row — agent unreachable"
-    exit 1
-  fi
+echo "Record decision HTTP status: $RESP_CODE"
+if [ "$RESP_CODE" = "000" ]; then
+  echo "FAIL: agent unreachable for record decision call"
+  exit 1
 fi
 
-# Also test the auditLog variant (tool_type=n8n_audit, success=false)
-AUDIT_TOOL_NAME="e2e-audit-log-$(date +%s)"
+# RUN 2: Post the auditLog variant (tool_type=n8n_audit, success=false)
 echo "Posting audit/tool-call with auditLog variant..."
-RESP2=$(curl -sf -X POST "$AGENT_URL/api/v1/audit/tool-call" \
+RESP2_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$AGENT_URL/api/v1/audit/tool-call" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)" \
-  -H "Idempotency-Key: e2e-audit-log-test-1" \
+  -H "Authorization: $AUTH" \
+  -H "Idempotency-Key: e2e-audit-log-test-$(date +%s)" \
   -d "{
     \"tool_name\": \"$AUDIT_TOOL_NAME\",
     \"tool_type\": \"n8n_audit\",
@@ -61,13 +67,27 @@ RESP2=$(curl -sf -X POST "$AGENT_URL/api/v1/audit/tool-call" \
     \"output\": {},
     \"success\": false,
     \"error_message\": \"downstream timeout\"
-  }" 2>/dev/null || echo '{"error":"agent unreachable"}')
+  }")
 
-echo "Audit log response: $RESP2"
+echo "Audit log HTTP status: $RESP2_CODE"
 
-# Verify DB state — audit rows should exist with user_id set
-echo "Verifying DB state..."
-"$LIB_DIR/verify-db.sh" audit-row-exists "$TOOL_NAME" || true
-"$LIB_DIR/verify-db.sh" audit-row-exists "$AUDIT_TOOL_NAME" || true
+# Allow async DB writes to flush
+sleep 2
+
+# ASSERT 1: record decision audit row exists
+echo "Verifying DB state for record decision..."
+"$LIB_DIR/verify-db.sh" audit-row-exists "$TOOL_NAME"
+
+# ASSERT 2: audit log variant row exists
+echo "Verifying DB state for audit log variant..."
+"$LIB_DIR/verify-db.sh" audit-row-exists "$AUDIT_TOOL_NAME"
+
+# ASSERT 3: user_id was recorded correctly
+echo "Verifying user_id attribution..."
+"$LIB_DIR/verify-db.sh" audit-row-has-user-id "$TOOL_NAME" "$USER_TOKEN"
+
+# CLEANUP: remove test rows
+psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
+  -c "DELETE FROM audit_tool_calls WHERE tool_name LIKE 'e2e-record-decision-%' OR tool_name LIKE 'e2e-audit-log-%'" 2>/dev/null || true
 
 echo "PASS: record-decision-writes-audit-row"
