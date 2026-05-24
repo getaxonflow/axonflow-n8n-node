@@ -82,7 +82,7 @@ n8n_create_credential() {
 }
 CRED_EOF
 )")
-  echo "$resp" | jq -r '.data.id // .id'
+  echo "$resp" | jq -r '.data.id // .id' 2>/dev/null || echo ""
 }
 
 # Import a workflow from a JSON file.
@@ -110,7 +110,7 @@ n8n_import_workflow() {
   resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows" \
     -H "Content-Type: application/json" \
     -d "$workflow_json")
-  echo "$resp" | jq -r '.data.id // .id'
+  echo "$resp" | jq -r '.data.id // .id' 2>/dev/null || echo ""
 }
 
 # Activate a workflow.
@@ -119,7 +119,7 @@ n8n_import_workflow() {
 n8n_activate_workflow() {
   local workflow_id="$1"
   local version_id
-  version_id=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null | jq -r '.data.versionId // ""' 2>/dev/null || echo "")
+  version_id=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null | jq -r '.data.versionId // ""' 2>/dev/null || echo "" 2>/dev/null || echo "")
   if [ -n "$version_id" ]; then
     curl -s -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$workflow_id/activate" \
       -H "Content-Type: application/json" \
@@ -141,7 +141,7 @@ n8n_execute_workflow() {
     "$N8N_URL/rest/workflows/$workflow_id/run" \
     -H "Content-Type: application/json" \
     -d '{}' 2>/dev/null || echo '{}')
-  echo "$resp" | jq -r '.data?.executionId // .executionId // "unknown"'
+  echo "$resp" | jq -r '.data?.executionId // .executionId // "unknown"' 2>/dev/null || echo ""
 }
 
 # Trigger a webhook-based workflow.
@@ -171,9 +171,9 @@ n8n_execution_status() {
   result=$(n8n_get_execution "$execution_id")
 
   local status finished stoppedAt
-  status=$(echo "$result" | jq -r '.data.status // .status // "unknown"')
-  finished=$(echo "$result" | jq -r '.data.finished // .finished // false')
-  stoppedAt=$(echo "$result" | jq -r '.data.stoppedAt // .stoppedAt // empty')
+  status=$(echo "$result" | jq -r '.data.status // .status // "unknown"' 2>/dev/null || echo "")
+  finished=$(echo "$result" | jq -r '.data.finished // .finished // false' 2>/dev/null || echo "")
+  stoppedAt=$(echo "$result" | jq -r '.data.stoppedAt // .stoppedAt // empty' 2>/dev/null || echo "")
 
   # Prefer .status field (n8n 1.x+)
   if [ "$status" = "success" ] || [ "$status" = "error" ] || [ "$status" = "waiting" ] || [ "$status" = "crashed" ]; then
@@ -256,7 +256,7 @@ n8n_latest_execution() {
   local resp
   resp=$(curl -sf -b "$_N8N_COOKIE_JAR" \
     "$N8N_URL/rest/executions?workflowId=$workflow_id&limit=1" 2>/dev/null || echo '{}')
-  echo "$resp" | jq -r '.data.results[0].id // .data[0].id // "unknown"'
+  echo "$resp" | jq -r '.data.results[0].id // .data[0].id // "unknown"' 2>/dev/null || echo ""
 }
 
 # Install the AxonFlow community node from npm (v1.0.0).
