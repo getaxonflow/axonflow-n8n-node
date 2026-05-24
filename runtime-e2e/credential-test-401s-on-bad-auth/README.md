@@ -1,11 +1,11 @@
 # credential-test-401s-on-bad-auth
 
-Verifies the credential test endpoint behavior by exercising the same
-`POST /api/v1/mcp/check-input` request that the `AxonFlowApi.credentials.ts`
-test configuration uses.
+Verifies credential behavior by creating workflows with different credentials
+in n8n and executing them through n8n's runtime.
 
 The test:
-1. Valid credentials should return HTTP 200
-2. Invalid credentials should return HTTP 401 in enterprise mode (community
-   mode returns 200 due to platform permissiveness — documented behavior)
-3. Missing auth header behavior
+1. Good credentials: workflow executes and succeeds through n8n
+2. Bad credentials: workflow either fails (enterprise: 401) or succeeds
+   (community: permissive mode returns 200 for any creds)
+3. Unreachable endpoint: workflow succeeds via fail-open fallback (transport
+   error swallowed) with `_axonflow_unreachable` in output

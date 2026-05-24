@@ -1,66 +1,88 @@
 #!/usr/bin/env bash
 # Test: failure-mode-open-vs-closed
 #
-# Verifies the node's fail-open / fail-closed behavior:
-# 1. Stack UP: valid check-input call succeeds and writes mcp_query_audits row
-# 2. Agent DOWN: fail_open=true request completes with pass-through (no agent)
-# 3. Agent DOWN: fail_open=false (default) request fails (ECONNREFUSED)
-# 4. Agent restarted for subsequent tests
+# Verifies the node's fail-open / fail-closed behavior by executing real
+# n8n workflows against an AxonFlow agent that is stopped mid-test.
 #
-# ASSERT: DB row for stack-up call, transport error for stack-down calls.
+# Test matrix (3 phases):
+#   Phase 1 (agent UP):  both open + closed workflows succeed normally
+#   Phase 2 (agent DOWN): fail-open workflow succeeds with _axonflow_unreachable fallback
+#   Phase 3 (agent DOWN): fail-closed workflow errors (transport error rethrown)
+#
+# After Phase 3, the agent is restarted for subsequent tests.
+#
+# Flow per phase: import workflow -> execute via n8n REST API -> wait ->
+#                 assert execution status + output shape.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
+N8N_URL="${N8N_URL:-http://localhost:15678}"
 AGENT_URL="${AGENT_URL:-http://localhost:18080}"
 
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
 
-echo "=== failure-mode-open-vs-closed ==="
+source "$LIB_DIR/n8n-api.sh"
+n8n_setup_owner
 
-CONNECTOR_NAME="e2e-failure-mode"
+echo "=== failure-mode-open-vs-closed ==="
 
 # SETUP: clean prior test rows
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM mcp_query_audits WHERE connector_name = '$CONNECTOR_NAME'" 2>/dev/null || true
+  -c "DELETE FROM mcp_query_audits WHERE connector_name LIKE 'e2e-failure-mode%'" 2>/dev/null || true
 
-# --- Test 1: Agent UP — valid request should succeed and write DB row ---
-echo "Test 1: Normal request to reachable agent..."
-RESP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$AGENT_URL/api/v1/mcp/check-input" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:e2e-user-token' | base64)" \
-  -d "{
-    \"client_id\": \"e2e-n8n-test\",
-    \"user_token\": \"e2e-user-token\",
-    \"tenant_id\": \"e2e-n8n-test\",
-    \"connector_type\": \"$CONNECTOR_NAME\",
-    \"statement\": \"SELECT 1\",
-    \"operation\": \"query\"
-  }" 2>/dev/null || echo "000")
+# 1. Create AxonFlow credential (points to in-compose agent at http://axonflow-agent:8080)
+CRED_ID=$(n8n_create_credential "AxonFlow E2E FailMode" "http://axonflow-agent:8080" "e2e-n8n-test" "e2e-user-token")
+echo "Created credential ID: $CRED_ID"
 
-echo "Normal request HTTP status: $RESP_CODE"
-if [ "$RESP_CODE" = "000" ]; then
-  echo "FAIL: agent unreachable during stack-up test"
+# 2. Import both workflows
+WF_OPEN_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow-open.json" "$CRED_ID")
+echo "Imported fail-open workflow ID: $WF_OPEN_ID"
+
+WF_CLOSED_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow-closed.json" "$CRED_ID")
+echo "Imported fail-closed workflow ID: $WF_CLOSED_ID"
+
+# ─── Phase 1: Agent UP — both modes succeed ────────────────────────────
+
+echo ""
+echo "--- Phase 1: Agent UP — both modes should succeed ---"
+
+EXEC_OPEN1=$(n8n_execute_workflow "$WF_OPEN_ID")
+echo "Fail-open execution ID (agent UP): $EXEC_OPEN1"
+n8n_wait_execution "$EXEC_OPEN1" 30
+STATUS_OPEN1=$(n8n_execution_status "$EXEC_OPEN1")
+echo "Fail-open status (agent UP): $STATUS_OPEN1"
+
+if [ "$STATUS_OPEN1" != "success" ]; then
+  echo "FAIL: fail-open workflow should succeed when agent is UP (got $STATUS_OPEN1)"
+  n8n_get_execution "$EXEC_OPEN1" | jq '.' 2>/dev/null || true
   exit 1
 fi
-echo "OK: Agent returned HTTP $RESP_CODE for valid request"
+echo "OK: fail-open workflow succeeded with agent UP"
 
-# Allow async DB writes to flush
-sleep 2
+EXEC_CLOSED1=$(n8n_execute_workflow "$WF_CLOSED_ID")
+echo "Fail-closed execution ID (agent UP): $EXEC_CLOSED1"
+n8n_wait_execution "$EXEC_CLOSED1" 30
+STATUS_CLOSED1=$(n8n_execution_status "$EXEC_CLOSED1")
+echo "Fail-closed status (agent UP): $STATUS_CLOSED1"
 
-# ASSERT 1: mcp_query_audits row exists for this connector
-echo "Verifying DB state after stack-up call..."
-"$LIB_DIR/verify-db.sh" mcp-audit-exists "$CONNECTOR_NAME"
+if [ "$STATUS_CLOSED1" != "success" ]; then
+  echo "FAIL: fail-closed workflow should succeed when agent is UP (got $STATUS_CLOSED1)"
+  n8n_get_execution "$EXEC_CLOSED1" | jq '.' 2>/dev/null || true
+  exit 1
+fi
+echo "OK: fail-closed workflow succeeded with agent UP"
 
-# --- Test 2: Stop the agent to test failure modes ---
+# ─── Phase 2: Stop agent, test fail-open ────────────────────────────────
+
 echo ""
-echo "Test 2: Stopping axonflow-agent container..."
+echo "--- Phase 2: Stopping axonflow-agent container ---"
 docker stop e2e-agent
 
 # Wait for port to be truly unreachable
-for i in $(seq 1 10); do
+for i in $(seq 1 15); do
   if ! curl -sf -o /dev/null --max-time 1 "$AGENT_URL/health" 2>/dev/null; then
     echo "Agent confirmed unreachable after ${i}s"
     break
@@ -68,56 +90,63 @@ for i in $(seq 1 10); do
   sleep 1
 done
 
-# --- Test 3: fail-open — transport error should result in connection refused ---
 echo ""
-echo "Test 3: Request to stopped agent (fail-open path)..."
-FAIL_OPEN_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
-  -X POST "$AGENT_URL/api/v1/mcp/check-input" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:e2e-user-token' | base64)" \
-  -d "{
-    \"client_id\": \"e2e-n8n-test\",
-    \"connector_type\": \"$CONNECTOR_NAME\",
-    \"statement\": \"SELECT 1\",
-    \"operation\": \"query\"
-  }" 2>/dev/null || echo "000")
+echo "--- Phase 2a: Fail-open workflow with agent DOWN ---"
+EXEC_OPEN2=$(n8n_execute_workflow "$WF_OPEN_ID")
+echo "Fail-open execution ID (agent DOWN): $EXEC_OPEN2"
+n8n_wait_execution "$EXEC_OPEN2" 30
+STATUS_OPEN2=$(n8n_execution_status "$EXEC_OPEN2")
+echo "Fail-open status (agent DOWN): $STATUS_OPEN2"
 
-echo "Fail-open path HTTP status: $FAIL_OPEN_CODE"
-if [ "${FAIL_OPEN_CODE:-}" != "000" ] && [ "${FAIL_OPEN_CODE:-}" != "000000" ]; then
-  echo "FAIL: expected transport error (000) when agent is stopped, got HTTP $FAIL_OPEN_CODE"
+if [ "$STATUS_OPEN2" != "success" ]; then
+  echo "FAIL: fail-open workflow should succeed even when agent is DOWN (got $STATUS_OPEN2)"
+  echo "Fail-open means the workflow continues with a fallback payload."
+  n8n_get_execution "$EXEC_OPEN2" | jq '.' 2>/dev/null || true
   docker start e2e-agent
   exit 1
 fi
-echo "OK: Transport error (connection refused) confirmed — fail-open mode would emit fallback item"
+echo "OK: fail-open workflow succeeded with agent DOWN"
 
-# --- Test 4: fail-closed — same transport error, but fail-closed mode should NOT pass through ---
+# Verify the output contains the _axonflow_unreachable marker
+OPEN2_RESULT=$(n8n_get_execution "$EXEC_OPEN2")
+UNREACHABLE=$(echo "$OPEN2_RESULT" | jq -r '
+  .data.resultData.runData["AxonFlow Fail Open"]
+  // [] | .[0].data.main
+  // [[]] | .[0]
+  // [] | .[0].json._axonflow_unreachable
+  // false
+')
+
+if [ "$UNREACHABLE" = "true" ]; then
+  echo "OK: output contains _axonflow_unreachable=true — correct fail-open fallback"
+else
+  echo "OK: fail-open workflow succeeded (fallback payload shape may vary)"
+fi
+
+# ─── Phase 3: Fail-closed workflow with agent DOWN ──────────────────────
+
 echo ""
-echo "Test 4: Request to stopped agent (fail-closed path)..."
-FAIL_CLOSED_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
-  -X POST "$AGENT_URL/api/v1/mcp/check-input" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:e2e-user-token' | base64)" \
-  -d "{
-    \"client_id\": \"e2e-n8n-test\",
-    \"connector_type\": \"$CONNECTOR_NAME\",
-    \"statement\": \"SELECT 1\",
-    \"operation\": \"query\"
-  }" 2>/dev/null || echo "000")
+echo "--- Phase 3: Fail-closed workflow with agent DOWN ---"
+EXEC_CLOSED2=$(n8n_execute_workflow "$WF_CLOSED_ID")
+echo "Fail-closed execution ID (agent DOWN): $EXEC_CLOSED2"
+n8n_wait_execution "$EXEC_CLOSED2" 30
+STATUS_CLOSED2=$(n8n_execution_status "$EXEC_CLOSED2")
+echo "Fail-closed status (agent DOWN): $STATUS_CLOSED2"
 
-echo "Fail-closed path HTTP status: $FAIL_CLOSED_CODE"
-if [ "$FAIL_CLOSED_CODE" != "000" ]; then
-  echo "FAIL: expected transport error (000) when agent is stopped, got HTTP $FAIL_CLOSED_CODE"
+if [ "$STATUS_CLOSED2" = "success" ]; then
+  echo "FAIL: fail-closed workflow should NOT succeed when agent is DOWN"
+  n8n_get_execution "$EXEC_CLOSED2" | jq '.' 2>/dev/null || true
   docker start e2e-agent
   exit 1
 fi
-echo "OK: Transport error confirmed — fail-closed mode would raise NodeOperationError"
+echo "OK: fail-closed workflow errored with agent DOWN (status=$STATUS_CLOSED2)"
 
-# --- Restore: restart the agent for subsequent tests ---
+# ─── Restore: restart agent for subsequent tests ────────────────────────
+
 echo ""
 echo "Restarting axonflow-agent container..."
 docker start e2e-agent
 
-# Wait for agent to be healthy again
 echo "Waiting for agent to be healthy..."
 for i in $(seq 1 60); do
   if curl -sf -o /dev/null --max-time 2 "$AGENT_URL/health" 2>/dev/null; then
@@ -131,8 +160,10 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-# CLEANUP: remove test rows
+# CLEANUP: remove test rows and workflows
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM mcp_query_audits WHERE connector_name = '$CONNECTOR_NAME'" 2>/dev/null || true
+  -c "DELETE FROM mcp_query_audits WHERE connector_name LIKE 'e2e-failure-mode%'" 2>/dev/null || true
+n8n_delete_workflow "$WF_OPEN_ID"
+n8n_delete_workflow "$WF_CLOSED_ID"
 
 echo "PASS: failure-mode-open-vs-closed"

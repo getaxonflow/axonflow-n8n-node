@@ -1,5 +1,5 @@
 {
-  "name": "E2E: Failure Mode Test",
+  "name": "E2E: Failure Mode Closed",
   "nodes": [
     {
       "parameters": {},
@@ -12,14 +12,14 @@
     {
       "parameters": {
         "operation": "checkPolicy",
-        "failureMode": "open",
-        "connectorType": "e2e-failure-mode",
+        "failureMode": "closed",
+        "connectorType": "e2e-failure-mode-closed",
         "statement": "SELECT 1",
         "mcpOperation": "query",
         "parameters": "{}"
       },
       "id": "2",
-      "name": "AxonFlow (Fail Open)",
+      "name": "AxonFlow Fail Closed",
       "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
       "typeVersion": 1,
       "position": [300, 300],
@@ -33,7 +33,7 @@
   ],
   "connections": {
     "Manual Trigger": {
-      "main": [[{"node": "AxonFlow (Fail Open)", "type": "main", "index": 0}]]
+      "main": [[{"node": "AxonFlow Fail Closed", "type": "main", "index": 0}]]
     }
   },
   "settings": {

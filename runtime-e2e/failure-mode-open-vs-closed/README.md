@@ -1,10 +1,13 @@
 # failure-mode-open-vs-closed
 
-Verifies the node's fail-open and fail-closed behavior by testing against
-the real AxonFlow agent with various error conditions.
+Verifies the node's fail-open and fail-closed behavior by executing real n8n
+workflows against an AxonFlow agent that is stopped mid-test.
+
+Uses two separate workflows: `workflow-open.json` (failureMode=open) and
+`workflow-closed.json` (failureMode=closed).
 
 The test:
-1. Normal request to reachable agent (should return 200)
-2. Bad auth request (should return 401/403, which fail-open must NOT swallow)
-3. Transport error to unreachable host (fail-open would emit fallback item)
-4. Logic verification against the exhaustive unit test coverage
+1. Phase 1 (agent UP): both fail-open and fail-closed workflows succeed
+2. Phase 2 (agent DOWN): fail-open workflow succeeds with `_axonflow_unreachable` fallback
+3. Phase 3 (agent DOWN): fail-closed workflow errors (transport error rethrown)
+4. Agent is restarted for subsequent tests

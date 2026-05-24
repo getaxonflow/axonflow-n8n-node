@@ -99,12 +99,11 @@ n8n_activate_workflow() {
     -d '{"active": true}' > /dev/null
 }
 
-# Execute a workflow via n8n CLI inside the container.
+# Execute a workflow via n8n's REST API.
 # Args: <workflow_id>
-# Returns: execution ID on stdout (or "manual" if not available)
+# Returns: execution ID on stdout
 n8n_execute_workflow() {
   local workflow_id="$1"
-  # Use the REST API to run the workflow manually
   local resp
   resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST \
     "$N8N_URL/api/v1/workflows/$workflow_id/run" \
@@ -127,22 +126,77 @@ n8n_trigger_webhook() {
 # Args: <execution_id>
 n8n_get_execution() {
   local execution_id="$1"
-  curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/api/v1/executions/$execution_id"
+  curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/api/v1/executions/$execution_id" 2>/dev/null || echo '{}'
 }
 
-# Wait for an execution to finish (poll status).
+# Get the terminal status of an execution: "success", "error", or "unknown".
+# n8n REST API returns .finished=true for completed runs (both success and error),
+# and .status="success"|"error"|"waiting"|"running" in newer versions.
+# Args: <execution_id>
+n8n_execution_status() {
+  local execution_id="$1"
+  local result
+  result=$(n8n_get_execution "$execution_id")
+
+  local status finished stoppedAt
+  status=$(echo "$result" | jq -r '.status // "unknown"')
+  finished=$(echo "$result" | jq -r '.finished // false')
+  stoppedAt=$(echo "$result" | jq -r '.stoppedAt // empty')
+
+  # Prefer .status field (n8n 1.x+)
+  if [ "$status" = "success" ] || [ "$status" = "error" ] || [ "$status" = "waiting" ] || [ "$status" = "crashed" ]; then
+    echo "$status"
+    return
+  fi
+
+  # Fallback: .finished + presence of .stoppedAt
+  if [ "$finished" = "true" ] && [ -n "$stoppedAt" ]; then
+    echo "success"
+    return
+  fi
+
+  echo "unknown"
+}
+
+# Wait for an execution to reach a terminal state (success or error).
 # Args: <execution_id> [timeout_seconds]
+# Returns 0 if terminal state reached, 1 on timeout.
 n8n_wait_execution() {
   local execution_id="$1"
   local timeout="${2:-30}"
   for i in $(seq 1 "$timeout"); do
     local status
-    status=$(n8n_get_execution "$execution_id" | jq -r '.finished // .status // "unknown"')
-    if [ "$status" = "true" ] || [ "$status" = "success" ] || [ "$status" = "error" ]; then
+    status=$(n8n_execution_status "$execution_id")
+    if [ "$status" = "success" ] || [ "$status" = "error" ] || [ "$status" = "crashed" ]; then
       return 0
     fi
     sleep 1
   done
   echo "TIMEOUT: execution $execution_id did not finish in ${timeout}s" >&2
   return 1
+}
+
+# Extract the output JSON of a named node from an execution.
+# Args: <execution_id> <node_name>
+# Returns: the output data JSON on stdout (first item of first output)
+n8n_node_output() {
+  local execution_id="$1"
+  local node_name="$2"
+  local result
+  result=$(n8n_get_execution "$execution_id")
+  echo "$result" | jq -r --arg nn "$node_name" '
+    .data.resultData.runData[$nn]
+      // [] | .[0].data.main
+      // [[]] | .[0]
+      // [] | .[0].json
+      // {}
+  '
+}
+
+# Delete a workflow.
+# Args: <workflow_id>
+n8n_delete_workflow() {
+  local workflow_id="$1"
+  curl -sf -b "$_N8N_COOKIE_JAR" -X DELETE "$N8N_URL/api/v1/workflows/$workflow_id" \
+    > /dev/null 2>&1 || true
 }

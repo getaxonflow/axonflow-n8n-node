@@ -1,76 +1,86 @@
 #!/usr/bin/env bash
 # Test: idempotency-retry-does-not-double-record
 #
-# Verifies that sending the same Idempotency-Key twice does NOT create
-# a duplicate audit row. This validates that n8n's "Retry on Fail"
+# Verifies that executing the same workflow twice with a fixed Idempotency-Key
+# does not create duplicate audit rows. This validates that n8n's "Retry on Fail"
 # feature combined with the node's Idempotency-Key header is safe.
 #
-# ASSERT: queries audit_logs for exactly 1 row, and idempotency_keys
-#         for 1 row matching the key.
+# The workflow.json has idempotencyKey set to a fixed value so both executions
+# send the same key, simulating what happens when n8n retries a failed step.
+#
+# Flow: import workflow -> execute twice via n8n REST API -> wait for both ->
+#       assert exactly 1 audit row (not 2) + 1 idempotency key row.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
-AGENT_URL="${AGENT_URL:-http://localhost:18080}"
+N8N_URL="${N8N_URL:-http://localhost:15678}"
 
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
 
+source "$LIB_DIR/n8n-api.sh"
+n8n_setup_owner
+
 echo "=== idempotency-retry-does-not-double-record ==="
 
-USER_TOKEN="e2e-user-token"
-IDEM_KEY="e2e-idempotency-test-$(date +%s)"
-TOOL_NAME="e2e-idem-check-$(date +%s)"
-AUTH="Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)"
+IDEM_KEY="e2e-fixed-idem-key"
+TOOL_NAME="e2e_idem_tool"
 
 # SETUP: clean any prior test rows
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM audit_logs WHERE tool_name LIKE 'e2e-idem-check-%'" 2>/dev/null || true
+  -c "DELETE FROM audit_logs WHERE tool_name = '$TOOL_NAME'" 2>/dev/null || true
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM idempotency_keys WHERE key LIKE 'e2e-idempotency-test-%'" 2>/dev/null || true
+  -c "DELETE FROM idempotency_keys WHERE key = '$IDEM_KEY'" 2>/dev/null || true
 
-# RUN 1: First call with the idempotency key
-echo "First call with Idempotency-Key: $IDEM_KEY"
-RESP1_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$AGENT_URL/api/v1/audit/tool-call" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: $AUTH" \
-  -H "Idempotency-Key: $IDEM_KEY" \
-  -d "{
-    \"tool_name\": \"$TOOL_NAME\",
-    \"tool_type\": \"n8n_decision\",
-    \"user_id\": \"$USER_TOKEN\",
-    \"workflow_id\": \"wf-idem-test\",
-    \"step_id\": \"idem-step\",
-    \"input\": {\"test\": true},
-    \"output\": {\"result\": \"ok\"},
-    \"success\": true,
-    \"error_message\": \"\"
-  }")
-echo "First call HTTP status: $RESP1_CODE"
-if [ "$RESP1_CODE" = "000" ]; then
-  echo "FAIL: agent unreachable for first idempotency call"
+# 1. Create AxonFlow credential
+CRED_ID=$(n8n_create_credential "AxonFlow E2E Idem" "http://axonflow-agent:8080" "e2e-n8n-test" "e2e-user-token")
+echo "Created credential ID: $CRED_ID"
+
+# 2. Import workflow (has fixed idempotency key "e2e-fixed-idem-key")
+WF_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow.json" "$CRED_ID")
+echo "Imported workflow ID: $WF_ID"
+
+# 3. Execute the workflow the FIRST time
+echo "Executing workflow (first call)..."
+EXEC1_ID=$(n8n_execute_workflow "$WF_ID")
+echo "First execution ID: $EXEC1_ID"
+
+if [ "$EXEC1_ID" = "unknown" ] || [ -z "$EXEC1_ID" ]; then
+  echo "FAIL: n8n did not return an execution ID for first call"
   exit 1
 fi
 
-# RUN 2: Same call again with the SAME idempotency key (simulating a retry)
-echo "Second call (retry) with same Idempotency-Key: $IDEM_KEY"
-RESP2_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$AGENT_URL/api/v1/audit/tool-call" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: $AUTH" \
-  -H "Idempotency-Key: $IDEM_KEY" \
-  -d "{
-    \"tool_name\": \"$TOOL_NAME\",
-    \"tool_type\": \"n8n_decision\",
-    \"user_id\": \"$USER_TOKEN\",
-    \"workflow_id\": \"wf-idem-test\",
-    \"step_id\": \"idem-step\",
-    \"input\": {\"test\": true},
-    \"output\": {\"result\": \"ok\"},
-    \"success\": true,
-    \"error_message\": \"\"
-  }")
-echo "Second call HTTP status: $RESP2_CODE"
+n8n_wait_execution "$EXEC1_ID" 30
+STATUS1=$(n8n_execution_status "$EXEC1_ID")
+echo "First execution status: $STATUS1"
+
+if [ "$STATUS1" != "success" ]; then
+  echo "FAIL: first execution did not succeed (status=$STATUS1)"
+  n8n_get_execution "$EXEC1_ID" | jq '.' 2>/dev/null || true
+  exit 1
+fi
+echo "OK: first execution succeeded"
+
+# 4. Execute the SAME workflow a second time (same idempotency key)
+echo "Executing workflow (second call — same idempotency key, simulating retry)..."
+EXEC2_ID=$(n8n_execute_workflow "$WF_ID")
+echo "Second execution ID: $EXEC2_ID"
+
+if [ "$EXEC2_ID" = "unknown" ] || [ -z "$EXEC2_ID" ]; then
+  echo "FAIL: n8n did not return an execution ID for second call"
+  exit 1
+fi
+
+n8n_wait_execution "$EXEC2_ID" 30
+STATUS2=$(n8n_execution_status "$EXEC2_ID")
+echo "Second execution status: $STATUS2"
+
+# The second execution may succeed (platform returns the cached response)
+# or may error if the platform rejects the duplicate. Either way, the key
+# behavior is that only 1 audit row exists.
+echo "OK: second execution completed (status=$STATUS2)"
 
 # Allow async DB writes to flush
 sleep 2
@@ -79,14 +89,15 @@ sleep 2
 echo "Verifying idempotency — should have exactly 1 audit row..."
 "$LIB_DIR/verify-db.sh" audit-row-count "$TOOL_NAME" 1
 
-# ASSERT 2: exactly 1 idempotency key row
+# ASSERT 2: idempotency key row exists
 echo "Verifying idempotency key row..."
 "$LIB_DIR/verify-db.sh" idempotency-count "$IDEM_KEY" 1
 
-# CLEANUP: remove test rows
+# CLEANUP: remove test rows and workflow
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM audit_logs WHERE tool_name LIKE 'e2e-idem-check-%'" 2>/dev/null || true
+  -c "DELETE FROM audit_logs WHERE tool_name = '$TOOL_NAME'" 2>/dev/null || true
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM idempotency_keys WHERE key LIKE 'e2e-idempotency-test-%'" 2>/dev/null || true
+  -c "DELETE FROM idempotency_keys WHERE key = '$IDEM_KEY'" 2>/dev/null || true
+n8n_delete_workflow "$WF_ID"
 
 echo "PASS: idempotency-retry-does-not-double-record"

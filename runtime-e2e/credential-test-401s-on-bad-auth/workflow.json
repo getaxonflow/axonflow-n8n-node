@@ -1,0 +1,41 @@
+{
+  "name": "E2E: Credential Test",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "checkPolicy",
+        "connectorType": "credential_test",
+        "statement": "n8n_credential_test_noop",
+        "mcpOperation": "query",
+        "parameters": "{}"
+      },
+      "id": "2",
+      "name": "AxonFlow Cred Test",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "1",
+          "name": "AxonFlow E2E"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{"node": "AxonFlow Cred Test", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

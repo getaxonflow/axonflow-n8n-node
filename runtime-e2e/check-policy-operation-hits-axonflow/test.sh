@@ -4,11 +4,13 @@
 # Verifies that an n8n workflow using the Check Policy operation successfully
 # calls the AxonFlow agent's /api/v1/mcp/check-input endpoint and that the
 # request is recorded in the mcp_query_audits table.
+#
+# Flow: import workflow -> execute via n8n REST API -> wait for completion ->
+#       assert execution succeeded -> assert DB row exists.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
-AGENT_URL="${AGENT_URL:-http://localhost:18080}"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
 
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
@@ -34,35 +36,39 @@ echo "Created credential ID: $CRED_ID"
 WF_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow.json" "$CRED_ID")
 echo "Imported workflow ID: $WF_ID"
 
-# 3. Call the agent directly from the host (simulating what the n8n node does)
-echo "Calling agent check-input endpoint directly..."
-RESP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$AGENT_URL/api/v1/mcp/check-input" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(printf 'e2e-n8n-test:e2e-user-token' | base64)" \
-  -d "{
-    \"client_id\": \"e2e-n8n-test\",
-    \"user_token\": \"e2e-user-token\",
-    \"tenant_id\": \"e2e-n8n-test\",
-    \"connector_type\": \"$CONNECTOR_NAME\",
-    \"statement\": \"SELECT * FROM users WHERE role = admin\",
-    \"operation\": \"query\"
-  }" 2>/dev/null || echo "000")
+# 3. Execute the workflow via n8n's REST API
+echo "Executing workflow via n8n REST API..."
+EXEC_ID=$(n8n_execute_workflow "$WF_ID")
+echo "Execution ID: $EXEC_ID"
 
-echo "Agent HTTP status: $RESP_CODE"
-if [ "$RESP_CODE" = "000" ]; then
-  echo "FAIL: agent unreachable"
+if [ "$EXEC_ID" = "unknown" ] || [ -z "$EXEC_ID" ]; then
+  echo "FAIL: n8n did not return an execution ID"
   exit 1
 fi
 
-# Allow a moment for async DB writes to flush
-sleep 2
+# 4. Wait for execution to complete
+echo "Waiting for execution to complete..."
+n8n_wait_execution "$EXEC_ID" 30
 
-# ASSERT: verify the request was recorded in mcp_query_audits
+# 5. Assert: execution completed successfully
+STATUS=$(n8n_execution_status "$EXEC_ID")
+echo "Execution status: $STATUS"
+
+if [ "$STATUS" != "success" ]; then
+  echo "FAIL: workflow execution did not succeed (status=$STATUS)"
+  echo "Execution detail:"
+  n8n_get_execution "$EXEC_ID" | jq '.' 2>/dev/null || true
+  exit 1
+fi
+echo "OK: workflow execution succeeded"
+
+# 6. Assert: mcp_query_audits row exists for this connector
 echo "Verifying mcp_query_audits DB state..."
 "$LIB_DIR/verify-db.sh" mcp-audit-exists "$CONNECTOR_NAME"
 
-# CLEANUP: remove test rows
+# CLEANUP: remove test rows and workflow
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
   -c "DELETE FROM mcp_query_audits WHERE connector_name = '$CONNECTOR_NAME'" 2>/dev/null || true
+n8n_delete_workflow "$WF_ID"
 
 echo "PASS: check-policy-operation-hits-axonflow"
