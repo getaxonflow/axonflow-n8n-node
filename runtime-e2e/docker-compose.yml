@@ -96,7 +96,7 @@ services:
       GENERIC_TIMEZONE: UTC
       # Disable auth for E2E testing so API calls don't need credentials
       N8N_BASIC_AUTH_ACTIVE: "false"
-      N8N_USER_MANAGEMENT_DISABLED: "false"
+      N8N_USER_MANAGEMENT_DISABLED: "true"
     ports:
       - "15678:5678"
     volumes:

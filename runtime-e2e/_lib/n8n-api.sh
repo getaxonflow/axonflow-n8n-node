@@ -17,49 +17,14 @@ _N8N_API_KEY=""
 _N8N_PASSWORD="E2eTest123!"
 
 # n8n auth: all curl calls use cookie auth via the cookie jar.
-# The _n8n_auth_args function is replaced by direct -b "$_N8N_COOKIE_JAR"
+# The _n8n_auth_args function is replaced by direct
 # in each curl call (subshell expansion of echo-based args breaks quoting).
 
 n8n_setup_owner() {
-  if [ "${_N8N_SETUP_DONE:-}" = "true" ]; then
-    return
-  fi
-  # Set up the owner account via n8n's internal REST API
-  curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/owner/setup" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"email\": \"e2e@axonflow.local\",
-      \"firstName\": \"E2E\",
-      \"lastName\": \"Test\",
-      \"password\": \"$_N8N_PASSWORD\"
-    }" > /dev/null 2>&1 || true
-
-  # Log in to get a session cookie (n8n uses emailOrLdapLoginId in newer versions)
-  curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/login" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"emailOrLdapLoginId\": \"e2e@axonflow.local\",
-      \"password\": \"$_N8N_PASSWORD\"
-    }" > /dev/null 2>&1 || true
-
-  # Create an API key for the public API
-  local api_resp
-  api_resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/api-keys" \
-    -H "Content-Type: application/json" \
-    -d '{"label":"e2e-test"}' 2>/dev/null || echo '{}')
-  _N8N_API_KEY=$(echo "$api_resp" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('data',{}).get('apiKey','') or d.get('apiKey',''))
-except: print('')
-" 2>/dev/null)
-
-  if [ -n "$_N8N_API_KEY" ]; then
-    echo "  n8n API key obtained"
-  else
-    echo "  WARN: could not obtain n8n API key, using cookie auth"
-  fi
+  # With N8N_USER_MANAGEMENT_DISABLED=true, no auth is needed.
+  # The REST API works without cookies or API keys.
+  # This function is a no-op but kept for interface compatibility.
+  true
 }
 
 # Create an AxonFlow credential in n8n.
@@ -68,7 +33,7 @@ except: print('')
 n8n_create_credential() {
   local name="$1" endpoint="$2" client_id="$3" user_token="$4"
   local resp
-  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/credentials" \
+  resp=$(curl -sf -X POST "$N8N_URL/rest/credentials" \
     -H "Content-Type: application/json" \
     -d "$(cat <<CRED_EOF
 {
@@ -107,7 +72,7 @@ n8n_import_workflow() {
   fi
 
   local resp
-  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows" \
+  resp=$(curl -sf -X POST "$N8N_URL/rest/workflows" \
     -H "Content-Type: application/json" \
     -d "$workflow_json")
   echo "$resp" | jq -r '.data.id // .id' 2>/dev/null || echo ""
@@ -119,13 +84,13 @@ n8n_import_workflow() {
 n8n_activate_workflow() {
   local workflow_id="$1"
   local version_id
-  version_id=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null | jq -r '.data.versionId // ""' 2>/dev/null || echo "" 2>/dev/null || echo "")
+  version_id=$(curl -sf "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null | jq -r '.data.versionId // ""' 2>/dev/null || echo "" 2>/dev/null || echo "")
   if [ -n "$version_id" ]; then
-    curl -s -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$workflow_id/activate" \
+    curl -s -X POST "$N8N_URL/rest/workflows/$workflow_id/activate" \
       -H "Content-Type: application/json" \
       -d "{\"versionId\":\"$version_id\"}" > /dev/null 2>&1 || true
   else
-    curl -s -b "$_N8N_COOKIE_JAR" -X PATCH "$N8N_URL/rest/workflows/$workflow_id" \
+    curl -s -X PATCH "$N8N_URL/rest/workflows/$workflow_id" \
       -H "Content-Type: application/json" \
       -d '{"active": true}' > /dev/null 2>&1 || true
   fi
@@ -137,7 +102,7 @@ n8n_activate_workflow() {
 n8n_execute_workflow() {
   local workflow_id="$1"
   local resp
-  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST \
+  resp=$(curl -sf -X POST \
     "$N8N_URL/rest/workflows/$workflow_id/run" \
     -H "Content-Type: application/json" \
     -d '{}' 2>/dev/null || echo '{}')
@@ -158,7 +123,7 @@ n8n_trigger_webhook() {
 # Args: <execution_id>
 n8n_get_execution() {
   local execution_id="$1"
-  curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/executions/$execution_id" 2>/dev/null || echo '{}'
+  curl -sf "$N8N_URL/rest/executions/$execution_id" 2>/dev/null || echo '{}'
 }
 
 # Get the terminal status of an execution: "success", "error", or "unknown".
@@ -229,7 +194,7 @@ n8n_node_output() {
 # Args: <workflow_id>
 n8n_delete_workflow() {
   local workflow_id="$1"
-  curl -sf -b "$_N8N_COOKIE_JAR" -X DELETE "$N8N_URL/rest/workflows/$workflow_id" \
+  curl -sf -X DELETE "$N8N_URL/rest/workflows/$workflow_id" \
     > /dev/null 2>&1 || true
 }
 
@@ -254,7 +219,7 @@ n8n_activate_and_trigger() {
 n8n_latest_execution() {
   local workflow_id="$1"
   local resp
-  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" \
+  resp=$(curl -sf \
     "$N8N_URL/rest/executions?workflowId=$workflow_id&limit=1" 2>/dev/null || echo '{}')
   echo "$resp" | jq -r '.data.results[0].id // .data[0].id // "unknown"' 2>/dev/null || echo ""
 }
@@ -267,14 +232,7 @@ n8n_install_axonflow_node() {
     return
   fi
   # Install from npm. Silently succeeds if already installed.
-  curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/community-packages" \
+  curl -sf -X POST "$N8N_URL/rest/community-packages" \
     -H "Content-Type: application/json" \
     -d '{"name":"@axonflow/n8n-nodes-axonflow"}' > /dev/null 2>&1 || true
-  # Always re-login after install attempt to ensure fresh session
-  curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/login" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"emailOrLdapLoginId\": \"e2e@axonflow.local\",
-      \"password\": \"$_N8N_PASSWORD\"
-    }" > /dev/null 2>&1 || true
 }
