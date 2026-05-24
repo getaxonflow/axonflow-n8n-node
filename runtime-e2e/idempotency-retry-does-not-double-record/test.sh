@@ -5,7 +5,7 @@
 # a duplicate audit row. This validates that n8n's "Retry on Fail"
 # feature combined with the node's Idempotency-Key header is safe.
 #
-# ASSERT: queries audit_tool_calls for exactly 1 row, and idempotency_keys
+# ASSERT: queries audit_logs for exactly 1 row, and idempotency_keys
 #         for 1 row matching the key.
 set -euo pipefail
 
@@ -26,7 +26,7 @@ AUTH="Basic $(printf 'e2e-n8n-test:%s' "$USER_TOKEN" | base64)"
 
 # SETUP: clean any prior test rows
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM audit_tool_calls WHERE tool_name LIKE 'e2e-idem-check-%'" 2>/dev/null || true
+  -c "DELETE FROM audit_logs WHERE tool_name LIKE 'e2e-idem-check-%'" 2>/dev/null || true
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
   -c "DELETE FROM idempotency_keys WHERE key LIKE 'e2e-idempotency-test-%'" 2>/dev/null || true
 
@@ -85,7 +85,7 @@ echo "Verifying idempotency key row..."
 
 # CLEANUP: remove test rows
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM audit_tool_calls WHERE tool_name LIKE 'e2e-idem-check-%'" 2>/dev/null || true
+  -c "DELETE FROM audit_logs WHERE tool_name LIKE 'e2e-idem-check-%'" 2>/dev/null || true
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
   -c "DELETE FROM idempotency_keys WHERE key LIKE 'e2e-idempotency-test-%'" 2>/dev/null || true
 

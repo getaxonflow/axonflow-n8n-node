@@ -83,7 +83,7 @@ FAIL_OPEN_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
   }" 2>/dev/null || echo "000")
 
 echo "Fail-open path HTTP status: $FAIL_OPEN_CODE"
-if [ "$FAIL_OPEN_CODE" != "000" ]; then
+if [ "${FAIL_OPEN_CODE:-}" != "000" ] && [ "${FAIL_OPEN_CODE:-}" != "000000" ]; then
   echo "FAIL: expected transport error (000) when agent is stopped, got HTTP $FAIL_OPEN_CODE"
   docker start e2e-agent
   exit 1

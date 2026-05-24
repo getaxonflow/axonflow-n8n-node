@@ -46,7 +46,7 @@ case "${1:-}" in
   audit-row-exists)
     tool_name="${2:?usage: verify-db.sh audit-row-exists <tool_name>}"
     validate_safe_string "$tool_name" "tool_name"
-    count=$(psql_q -c "SELECT COUNT(*) FROM audit_tool_calls WHERE tool_name = '$tool_name'")
+    count=$(psql_q -c "SELECT COUNT(*) FROM audit_logs WHERE tool_name = '$tool_name'")
     if [ "$count" -lt 1 ]; then
       echo "FAIL: no audit row found for tool_name=$tool_name"
       exit 1
@@ -60,7 +60,7 @@ case "${1:-}" in
     expected_user_id="${3:?}"
     validate_safe_string "$tool_name" "tool_name"
     validate_safe_string "$expected_user_id" "expected_user_id"
-    actual=$(psql_q -c "SELECT user_id FROM audit_tool_calls WHERE tool_name = '$tool_name' LIMIT 1")
+    actual=$(psql_q -c "SELECT user_id FROM audit_logs WHERE tool_name = '$tool_name' LIMIT 1")
     if [ "$actual" != "$expected_user_id" ]; then
       echo "FAIL: user_id='$actual' (expected '$expected_user_id') for tool_name=$tool_name"
       exit 1
@@ -73,12 +73,12 @@ case "${1:-}" in
     tool_name="${2:?usage: verify-db.sh audit-row-count <tool_name> <expected>}"
     expected="${3:?}"
     validate_safe_string "$tool_name" "tool_name"
-    count=$(psql_q -c "SELECT COUNT(*) FROM audit_tool_calls WHERE tool_name = '$tool_name'")
+    count=$(psql_q -c "SELECT COUNT(*) FROM audit_logs WHERE tool_name = '$tool_name'")
     if [ "$count" -ne "$expected" ]; then
-      echo "FAIL: audit_tool_calls has $count rows for tool_name=$tool_name (expected $expected)"
+      echo "FAIL: audit_logs has $count rows for tool_name=$tool_name (expected $expected)"
       exit 1
     fi
-    echo "OK: audit_tool_calls has $count row(s) for tool_name=$tool_name"
+    echo "OK: audit_logs has $count row(s) for tool_name=$tool_name"
     exit 0
     ;;
 
