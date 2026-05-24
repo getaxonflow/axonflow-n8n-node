@@ -171,11 +171,10 @@ jobs:
             sleep 1
           done
 
-      - name: Install node into n8n
-        run: bash runtime-e2e/_lib/install-node-into-n8n.sh
-
       - name: Run E2E tests
         working-directory: runtime-e2e
+        env:
+          AXONFLOW_TELEMETRY: "off"
         run: |
           START_TIME=$(date +%s)
           chmod +x run-all.sh
