@@ -8,13 +8,15 @@
 # The workflow.json has idempotencyKey set to a fixed value so both executions
 # send the same key, simulating what happens when n8n retries a failed step.
 #
-# Flow: import workflow -> execute twice via n8n REST API -> wait for both ->
-#       assert exactly 1 audit row (not 2) + 1 idempotency key row.
+# Flow: setup owner -> install node -> create credential -> import workflow
+#       -> activate -> trigger webhook twice -> wait for both -> assert
+#       exactly 1 audit row (not 2) + 1 idempotency key row.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
+export WORK="${WORK:-/tmp}"
 
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
@@ -22,11 +24,13 @@ DB_PORT="${DB_PORT:-15432}"
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner
+n8n_install_axonflow_node
 
 echo "=== idempotency-retry-does-not-double-record ==="
 
 IDEM_KEY="e2e-fixed-idem-key"
 TOOL_NAME="e2e_idem_tool"
+WEBHOOK_PATH="e2e-idempotency-retry-does-not-double-record-workflow"
 
 # SETUP: clean any prior test rows
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
@@ -42,13 +46,24 @@ echo "Created credential ID: $CRED_ID"
 WF_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow.json" "$CRED_ID")
 echo "Imported workflow ID: $WF_ID"
 
-# 3. Execute the workflow the FIRST time
-echo "Executing workflow (first call)..."
-EXEC1_ID=$(n8n_execute_workflow "$WF_ID")
-echo "First execution ID: $EXEC1_ID"
+# 3. Activate workflow (webhook must be active to trigger)
+n8n_activate_workflow "$WF_ID"
+ACTIVE=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$WF_ID" | jq -r '.data.active')
+if [ "$ACTIVE" != "true" ]; then
+  echo "FAIL: workflow did not activate (active=$ACTIVE)"
+  exit 1
+fi
+echo "Workflow active: $ACTIVE"
 
+# 4. Trigger the workflow the FIRST time via webhook
+echo "Triggering webhook (first call): $WEBHOOK_PATH"
+n8n_trigger_webhook "$WEBHOOK_PATH" '{"test":true}'
+sleep 3
+
+EXEC1_ID=$(n8n_latest_execution "$WF_ID")
+echo "First execution ID: $EXEC1_ID"
 if [ "$EXEC1_ID" = "unknown" ] || [ -z "$EXEC1_ID" ]; then
-  echo "FAIL: n8n did not return an execution ID for first call"
+  echo "FAIL: no execution found for first call"
   exit 1
 fi
 
@@ -63,13 +78,15 @@ if [ "$STATUS1" != "success" ]; then
 fi
 echo "OK: first execution succeeded"
 
-# 4. Execute the SAME workflow a second time (same idempotency key)
-echo "Executing workflow (second call — same idempotency key, simulating retry)..."
-EXEC2_ID=$(n8n_execute_workflow "$WF_ID")
-echo "Second execution ID: $EXEC2_ID"
+# 5. Trigger the SAME workflow a second time (same idempotency key)
+echo "Triggering webhook (second call — same idempotency key, simulating retry): $WEBHOOK_PATH"
+n8n_trigger_webhook "$WEBHOOK_PATH" '{"test":true}'
+sleep 3
 
+EXEC2_ID=$(n8n_latest_execution "$WF_ID")
+echo "Second execution ID: $EXEC2_ID"
 if [ "$EXEC2_ID" = "unknown" ] || [ -z "$EXEC2_ID" ]; then
-  echo "FAIL: n8n did not return an execution ID for second call"
+  echo "FAIL: no execution found for second call"
   exit 1
 fi
 

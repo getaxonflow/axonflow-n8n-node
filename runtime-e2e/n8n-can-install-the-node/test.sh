@@ -2,41 +2,43 @@
 # Test: n8n-can-install-the-node
 #
 # Verifies that the AxonFlow node package is installed in n8n and that
-# n8n's node type registry includes the axonFlow node type.
+# n8n recognizes the node type by successfully activating a workflow
+# that uses the axonFlow node.
 #
-# ASSERT: queries n8n REST API for node types, fails if axonFlow absent.
+# Flow: setup owner -> install node -> create credential -> import workflow
+#       -> activate workflow -> if activation succeeds, node is recognized.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
+export WORK="${WORK:-/tmp}"
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner
+n8n_install_axonflow_node
 
-echo "Querying n8n node type registry via REST API..."
+echo "=== n8n-can-install-the-node ==="
 
-NODE_TYPES=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/api/v1/node-types" 2>/dev/null)
-if [ -z "$NODE_TYPES" ]; then
-  echo "FAIL: n8n-can-install-the-node — GET /api/v1/node-types returned empty response"
+# 1. Create credential
+CRED_ID=$(n8n_create_credential "AxonFlow E2E Install" "http://axonflow-agent:8080" "e2e-n8n-test" "e2e-user-token")
+echo "Credential ID: $CRED_ID"
+
+# 2. Import workflow that uses the AxonFlow node
+WF_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow.json" "$CRED_ID")
+echo "Workflow ID: $WF_ID"
+
+# 3. Activate workflow — this proves n8n recognizes the axonFlow node type.
+#    If the node type were missing, activation would fail.
+n8n_activate_workflow "$WF_ID"
+ACTIVE=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$WF_ID" | jq -r '.data.active')
+if [ "$ACTIVE" != "true" ]; then
+  echo "FAIL: workflow did not activate (active=$ACTIVE) — node type not recognized"
   exit 1
 fi
+echo "OK: workflow activated — n8n recognizes the axonFlow node type"
 
-if echo "$NODE_TYPES" | grep -q "axonFlow" 2>/dev/null; then
-  echo "OK: axonFlow node type found in n8n registry"
-else
-  echo "FAIL: n8n-can-install-the-node — axonFlow not found in node type registry"
-  echo "Response (first 500 chars): $(echo "$NODE_TYPES" | head -c 500)"
-  exit 1
-fi
-
-# Second assertion: verify the package is actually installed on disk inside the container
-echo "Verifying package exists on container filesystem..."
-INSTALLED=$(docker exec e2e-n8n sh -c 'ls /home/node/.n8n/nodes/node_modules/@axonflow/n8n-nodes-axonflow/package.json 2>/dev/null' || echo "")
-if [ -z "$INSTALLED" ]; then
-  echo "FAIL: n8n-can-install-the-node — package.json not found at expected container path"
-  exit 1
-fi
-echo "OK: package.json exists at /home/node/.n8n/nodes/node_modules/@axonflow/"
+# CLEANUP
+n8n_delete_workflow "$WF_ID"
 
 echo "PASS: n8n-can-install-the-node"

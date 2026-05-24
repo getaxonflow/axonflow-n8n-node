@@ -15,19 +15,22 @@
 #   3. The 404 error from community mode is surfaced in the execution result
 #      (not silently swallowed — fail-open only swallows transport/5xx errors).
 #
-# Flow: import workflow -> execute via n8n REST API -> wait for completion ->
-#       assert execution reached the AxonFlow node -> verify error message
-#       references the HITL endpoint (404, not a programming error).
+# Flow: setup owner -> install node -> create credential -> import workflow
+#       -> activate -> trigger via webhook -> wait -> assert error status.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
+export WORK="${WORK:-/tmp}"
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner
+n8n_install_axonflow_node
 
 echo "=== wait-for-approval-pauses-workflow ==="
+
+WEBHOOK_PATH="e2e-wait-for-approval-pauses-workflow-workflow"
 
 # 1. Create AxonFlow credential
 CRED_ID=$(n8n_create_credential "AxonFlow E2E HITL" "http://axonflow-agent:8080" "e2e-n8n-test" "e2e-user-token")
@@ -37,25 +40,33 @@ echo "Created credential ID: $CRED_ID"
 WF_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow.json" "$CRED_ID")
 echo "Imported workflow ID: $WF_ID"
 
-# 3. Execute the workflow via n8n REST API
-echo "Executing Wait for Approval workflow via n8n REST API..."
-EXEC_ID=$(n8n_execute_workflow "$WF_ID")
-echo "Execution ID: $EXEC_ID"
+# 3. Activate workflow (webhook must be active to trigger)
+n8n_activate_workflow "$WF_ID"
+ACTIVE=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$WF_ID" | jq -r '.data.active')
+if [ "$ACTIVE" != "true" ]; then
+  echo "FAIL: workflow did not activate (active=$ACTIVE)"
+  exit 1
+fi
+echo "Workflow active: $ACTIVE"
 
+# 4. Trigger via webhook
+echo "Triggering webhook: $WEBHOOK_PATH"
+n8n_trigger_webhook "$WEBHOOK_PATH" '{"test":true}'
+sleep 3
+
+# 5. Get execution and wait
+EXEC_ID=$(n8n_latest_execution "$WF_ID")
+echo "Execution ID: $EXEC_ID"
 if [ "$EXEC_ID" = "unknown" ] || [ -z "$EXEC_ID" ]; then
-  echo "FAIL: n8n did not return an execution ID"
+  echo "FAIL: no execution found for workflow $WF_ID"
   exit 1
 fi
 
-# 4. Wait for execution to complete (will be "error" in community mode since
-#    HITL endpoint returns 404 and fail-open correctly does not swallow 4xx)
-echo "Waiting for execution to complete..."
 n8n_wait_execution "$EXEC_ID" 30
-
 STATUS=$(n8n_execution_status "$EXEC_ID")
 echo "Execution status: $STATUS"
 
-# 5. Get the full execution result for inspection
+# 6. Get the full execution result for inspection
 EXEC_RESULT=$(n8n_get_execution "$EXEC_ID")
 
 # The AxonFlow agent runs in community mode (DEPLOYMENT_MODE=community).

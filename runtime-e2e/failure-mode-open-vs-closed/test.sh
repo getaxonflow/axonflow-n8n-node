@@ -11,14 +11,16 @@
 #
 # After Phase 3, the agent is restarted for subsequent tests.
 #
-# Flow per phase: import workflow -> execute via n8n REST API -> wait ->
-#                 assert execution status + output shape.
+# Flow per phase: setup owner -> install node -> create credential ->
+#                 import workflows -> activate -> trigger via webhook ->
+#                 wait -> assert execution status + output shape.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
 AGENT_URL="${AGENT_URL:-http://localhost:18080}"
+export WORK="${WORK:-/tmp}"
 
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
@@ -26,8 +28,12 @@ DB_PORT="${DB_PORT:-15432}"
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner
+n8n_install_axonflow_node
 
 echo "=== failure-mode-open-vs-closed ==="
+
+WEBHOOK_PATH_OPEN="e2e-failure-mode-open-vs-closed-workflow-open"
+WEBHOOK_PATH_CLOSED="e2e-failure-mode-open-vs-closed-workflow-closed"
 
 # SETUP: clean prior test rows
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
@@ -44,12 +50,33 @@ echo "Imported fail-open workflow ID: $WF_OPEN_ID"
 WF_CLOSED_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow-closed.json" "$CRED_ID")
 echo "Imported fail-closed workflow ID: $WF_CLOSED_ID"
 
-# ─── Phase 1: Agent UP — both modes succeed ────────────────────────────
+# 3. Activate both workflows (webhooks must be active to trigger)
+n8n_activate_workflow "$WF_OPEN_ID"
+ACTIVE_OPEN=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$WF_OPEN_ID" | jq -r '.data.active')
+if [ "$ACTIVE_OPEN" != "true" ]; then
+  echo "FAIL: fail-open workflow did not activate (active=$ACTIVE_OPEN)"
+  exit 1
+fi
+echo "Fail-open workflow active: $ACTIVE_OPEN"
+
+n8n_activate_workflow "$WF_CLOSED_ID"
+ACTIVE_CLOSED=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$WF_CLOSED_ID" | jq -r '.data.active')
+if [ "$ACTIVE_CLOSED" != "true" ]; then
+  echo "FAIL: fail-closed workflow did not activate (active=$ACTIVE_CLOSED)"
+  exit 1
+fi
+echo "Fail-closed workflow active: $ACTIVE_CLOSED"
+
+# --- Phase 1: Agent UP -- both modes succeed ---
 
 echo ""
-echo "--- Phase 1: Agent UP — both modes should succeed ---"
+echo "--- Phase 1: Agent UP --- both modes should succeed ---"
 
-EXEC_OPEN1=$(n8n_execute_workflow "$WF_OPEN_ID")
+echo "Triggering fail-open webhook (agent UP): $WEBHOOK_PATH_OPEN"
+n8n_trigger_webhook "$WEBHOOK_PATH_OPEN" '{"test":true}'
+sleep 3
+
+EXEC_OPEN1=$(n8n_latest_execution "$WF_OPEN_ID")
 echo "Fail-open execution ID (agent UP): $EXEC_OPEN1"
 n8n_wait_execution "$EXEC_OPEN1" 30
 STATUS_OPEN1=$(n8n_execution_status "$EXEC_OPEN1")
@@ -62,7 +89,11 @@ if [ "$STATUS_OPEN1" != "success" ]; then
 fi
 echo "OK: fail-open workflow succeeded with agent UP"
 
-EXEC_CLOSED1=$(n8n_execute_workflow "$WF_CLOSED_ID")
+echo "Triggering fail-closed webhook (agent UP): $WEBHOOK_PATH_CLOSED"
+n8n_trigger_webhook "$WEBHOOK_PATH_CLOSED" '{"test":true}'
+sleep 3
+
+EXEC_CLOSED1=$(n8n_latest_execution "$WF_CLOSED_ID")
 echo "Fail-closed execution ID (agent UP): $EXEC_CLOSED1"
 n8n_wait_execution "$EXEC_CLOSED1" 30
 STATUS_CLOSED1=$(n8n_execution_status "$EXEC_CLOSED1")
@@ -75,7 +106,7 @@ if [ "$STATUS_CLOSED1" != "success" ]; then
 fi
 echo "OK: fail-closed workflow succeeded with agent UP"
 
-# ─── Phase 2: Stop agent, test fail-open ────────────────────────────────
+# --- Phase 2: Stop agent, test fail-open ---
 
 echo ""
 echo "--- Phase 2: Stopping axonflow-agent container ---"
@@ -92,7 +123,11 @@ done
 
 echo ""
 echo "--- Phase 2a: Fail-open workflow with agent DOWN ---"
-EXEC_OPEN2=$(n8n_execute_workflow "$WF_OPEN_ID")
+echo "Triggering fail-open webhook (agent DOWN): $WEBHOOK_PATH_OPEN"
+n8n_trigger_webhook "$WEBHOOK_PATH_OPEN" '{"test":true}'
+sleep 3
+
+EXEC_OPEN2=$(n8n_latest_execution "$WF_OPEN_ID")
 echo "Fail-open execution ID (agent DOWN): $EXEC_OPEN2"
 n8n_wait_execution "$EXEC_OPEN2" 30
 STATUS_OPEN2=$(n8n_execution_status "$EXEC_OPEN2")
@@ -118,16 +153,20 @@ UNREACHABLE=$(echo "$OPEN2_RESULT" | jq -r '
 ')
 
 if [ "$UNREACHABLE" = "true" ]; then
-  echo "OK: output contains _axonflow_unreachable=true — correct fail-open fallback"
+  echo "OK: output contains _axonflow_unreachable=true --- correct fail-open fallback"
 else
   echo "OK: fail-open workflow succeeded (fallback payload shape may vary)"
 fi
 
-# ─── Phase 3: Fail-closed workflow with agent DOWN ──────────────────────
+# --- Phase 3: Fail-closed workflow with agent DOWN ---
 
 echo ""
 echo "--- Phase 3: Fail-closed workflow with agent DOWN ---"
-EXEC_CLOSED2=$(n8n_execute_workflow "$WF_CLOSED_ID")
+echo "Triggering fail-closed webhook (agent DOWN): $WEBHOOK_PATH_CLOSED"
+n8n_trigger_webhook "$WEBHOOK_PATH_CLOSED" '{"test":true}'
+sleep 3
+
+EXEC_CLOSED2=$(n8n_latest_execution "$WF_CLOSED_ID")
 echo "Fail-closed execution ID (agent DOWN): $EXEC_CLOSED2"
 n8n_wait_execution "$EXEC_CLOSED2" 30
 STATUS_CLOSED2=$(n8n_execution_status "$EXEC_CLOSED2")
@@ -141,7 +180,7 @@ if [ "$STATUS_CLOSED2" = "success" ]; then
 fi
 echo "OK: fail-closed workflow errored with agent DOWN (status=$STATUS_CLOSED2)"
 
-# ─── Restore: restart agent for subsequent tests ────────────────────────
+# --- Restore: restart agent for subsequent tests ---
 
 echo ""
 echo "Restarting axonflow-agent container..."
