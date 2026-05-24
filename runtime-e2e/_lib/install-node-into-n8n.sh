@@ -35,7 +35,7 @@ docker exec e2e-n8n sh -c '
   mkdir -p /home/node/.n8n/nodes
   cd /home/node/.n8n/nodes
   npm init -y 2>/dev/null || true
-  npm install /tmp/axonflow-node.tgz --save 2>&1
+  npm install /tmp/axonflow-node.tgz --save --ignore-scripts 2>&1
 '
 
 # 4. Restart n8n to pick up the new node
