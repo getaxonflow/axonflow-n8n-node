@@ -72,8 +72,12 @@ if [ "$GOOD_STATUS" != "success" ]; then
 fi
 echo "OK: good-credentials workflow succeeded"
 
-# Deactivate good-creds workflow before activating bad-creds (same webhook path)
+# Deactivate + delete good-creds workflow before activating bad-creds (same webhook path)
+curl -s -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$GOOD_WF_ID/deactivate" \
+  -H "Content-Type: application/json" -d '{}' > /dev/null 2>&1 || true
+sleep 1
 n8n_delete_workflow "$GOOD_WF_ID"
+sleep 2
 
 # --- Test 2: Bad credentials -- workflow should fail (or pass in community) ---
 
@@ -130,8 +134,12 @@ else
   exit 1
 fi
 
-# Deactivate bad-creds workflow before activating unreachable (same webhook path)
+# Deactivate + delete bad-creds workflow before activating unreachable (same webhook path)
+curl -s -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$BAD_WF_ID/deactivate" \
+  -H "Content-Type: application/json" -d '{}' > /dev/null 2>&1 || true
+sleep 1
 n8n_delete_workflow "$BAD_WF_ID"
+sleep 2
 
 # --- Test 3: Unreachable endpoint -- fail-open swallows transport error ---
 
