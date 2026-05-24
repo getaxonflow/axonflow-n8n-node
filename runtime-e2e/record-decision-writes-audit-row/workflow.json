@@ -2,12 +2,19 @@
   "name": "E2E: Record Decision",
   "nodes": [
     {
-      "parameters": {},
+      "parameters": {
+        "path": "e2e-record-decision-writes-audit-row-workflow",
+        "httpMethod": "POST",
+        "responseMode": "onReceived"
+      },
       "id": "1",
-      "name": "Manual Trigger",
-      "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
-      "position": [100, 300]
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        100,
+        300
+      ]
     },
     {
       "parameters": {
@@ -24,7 +31,10 @@
       "name": "AxonFlow Record Decision",
       "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
       "typeVersion": 1,
-      "position": [300, 300],
+      "position": [
+        300,
+        300
+      ],
       "credentials": {
         "axonFlowApi": {
           "id": "1",
@@ -34,8 +44,16 @@
     }
   ],
   "connections": {
-    "Manual Trigger": {
-      "main": [[{"node": "AxonFlow Record Decision", "type": "main", "index": 0}]]
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "AxonFlow Record Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {

@@ -220,3 +220,29 @@ n8n_delete_workflow() {
   curl -sf -b "$_N8N_COOKIE_JAR" -X DELETE "$N8N_URL/rest/workflows/$workflow_id" \
     > /dev/null 2>&1 || true
 }
+
+# Activate a workflow and trigger it via webhook.
+# Args: <workflow_id> <webhook_path> [body_json]
+# Returns: nothing (execution happens async; check executions after)
+n8n_activate_and_trigger() {
+  local workflow_id="$1"
+  local webhook_path="$2"
+  local body="${3:-'{}'}"
+
+  n8n_activate_workflow "$workflow_id"
+  sleep 1
+  curl -sf -X POST "$N8N_URL/webhook/$webhook_path" \
+    -H "Content-Type: application/json" \
+    -d "$body" > /dev/null 2>&1 || true
+}
+
+# Get the most recent execution for a workflow.
+# Args: <workflow_id>
+# Returns: execution ID on stdout
+n8n_latest_execution() {
+  local workflow_id="$1"
+  local resp
+  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" \
+    "$N8N_URL/rest/executions?workflowId=$workflow_id&limit=1" 2>/dev/null || echo '{}')
+  echo "$resp" | jq -r '.data[0].id // .data.results[0].id // "unknown"'
+}

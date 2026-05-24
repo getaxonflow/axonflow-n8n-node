@@ -2,12 +2,19 @@
   "name": "E2E: Failure Mode Open",
   "nodes": [
     {
-      "parameters": {},
+      "parameters": {
+        "path": "e2e-failure-mode-open-vs-closed-workflow-open",
+        "httpMethod": "POST",
+        "responseMode": "onReceived"
+      },
       "id": "1",
-      "name": "Manual Trigger",
-      "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
-      "position": [100, 300]
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        100,
+        300
+      ]
     },
     {
       "parameters": {
@@ -22,7 +29,10 @@
       "name": "AxonFlow Fail Open",
       "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
       "typeVersion": 1,
-      "position": [300, 300],
+      "position": [
+        300,
+        300
+      ],
       "credentials": {
         "axonFlowApi": {
           "id": "1",
@@ -32,8 +42,16 @@
     }
   ],
   "connections": {
-    "Manual Trigger": {
-      "main": [[{"node": "AxonFlow Fail Open", "type": "main", "index": 0}]]
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "AxonFlow Fail Open",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
