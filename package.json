@@ -1,6 +1,6 @@
 {
   "name": "@axonflow/n8n-nodes-axonflow",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "AxonFlow API integration for n8n — call AxonFlow policy and HITL endpoints from your workflows.",
   "keywords": [
     "n8n-community-node-package",

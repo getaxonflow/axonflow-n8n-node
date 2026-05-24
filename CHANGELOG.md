@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-05-24
+
+### Fixed (caught by runtime E2E)
+
+- Default `idempotencyKey` template uses `{{ $node.name }}` which fails in
+  webhook execution context (`ExpressionError: Referenced node doesn't exist`).
+  Workflow examples now use static keys.
+- `verify-db.sh` referenced non-existent `tool_name` column in `audit_logs`.
+  Fixed to use `mcp_query_audits.connector_name`.
+
+### Added
+
+- Runtime E2E tests rewritten to exercise the real n8n customer entry point:
+  workflow import via REST API → activate → webhook trigger → execution status.
+  All 7 tests go through n8n's workflow execution. Zero direct curl to AxonFlow.
+- `n8n-api.sh` helpers fully wired: `n8n_setup_owner`, `n8n_install_axonflow_node`,
+  `n8n_activate_workflow` (POST /activate with versionId for n8n v2.x),
+  `n8n_latest_execution`, `n8n_execution_status` (`.data.status` parsing).
+- `failure-mode-open-vs-closed`: real `docker stop/start` of AxonFlow agent
+  with n8n workflow behavior observed (not just curl transport codes).
+- `credential-test-401s-on-bad-auth`: good/bad/unreachable credentials tested
+  through real n8n workflow execution.
+
 ## [1.0.1] - 2026-05-24
 
 ### Fixed (caught by runtime E2E)
