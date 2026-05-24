@@ -119,15 +119,15 @@ n8n_import_workflow() {
 n8n_activate_workflow() {
   local workflow_id="$1"
   local version_id
-  version_id=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$workflow_id" | jq -r '.data.versionId // ""')
+  version_id=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null | jq -r '.data.versionId // ""' 2>/dev/null || echo "")
   if [ -n "$version_id" ]; then
-    curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$workflow_id/activate" \
+    curl -s -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$workflow_id/activate" \
       -H "Content-Type: application/json" \
-      -d "{\"versionId\":\"$version_id\"}" > /dev/null 2>&1
+      -d "{\"versionId\":\"$version_id\"}" > /dev/null 2>&1 || true
   else
-    curl -sf -b "$_N8N_COOKIE_JAR" -X PATCH "$N8N_URL/rest/workflows/$workflow_id" \
+    curl -s -b "$_N8N_COOKIE_JAR" -X PATCH "$N8N_URL/rest/workflows/$workflow_id" \
       -H "Content-Type: application/json" \
-      -d '{"active": true}' > /dev/null 2>&1
+      -d '{"active": true}' > /dev/null 2>&1 || true
   fi
 }
 
