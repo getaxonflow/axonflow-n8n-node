@@ -111,12 +111,21 @@ n8n_import_workflow() {
 }
 
 # Activate a workflow.
+# n8n v2.x requires POST /rest/workflows/{id}/activate with versionId.
 # Args: <workflow_id>
 n8n_activate_workflow() {
   local workflow_id="$1"
-  curl -sf -b "$_N8N_COOKIE_JAR" -X PATCH "$N8N_URL/rest/workflows/$workflow_id" \
-    -H "Content-Type: application/json" \
-    -d '{"active": true}' > /dev/null
+  local version_id
+  version_id=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$workflow_id" | jq -r '.data.versionId // ""')
+  if [ -n "$version_id" ]; then
+    curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$workflow_id/activate" \
+      -H "Content-Type: application/json" \
+      -d "{\"versionId\":\"$version_id\"}" > /dev/null 2>&1
+  else
+    curl -sf -b "$_N8N_COOKIE_JAR" -X PATCH "$N8N_URL/rest/workflows/$workflow_id" \
+      -H "Content-Type: application/json" \
+      -d '{"active": true}' > /dev/null 2>&1
+  fi
 }
 
 # Execute a workflow via n8n's REST API.
@@ -159,9 +168,9 @@ n8n_execution_status() {
   result=$(n8n_get_execution "$execution_id")
 
   local status finished stoppedAt
-  status=$(echo "$result" | jq -r '.status // "unknown"')
-  finished=$(echo "$result" | jq -r '.finished // false')
-  stoppedAt=$(echo "$result" | jq -r '.stoppedAt // empty')
+  status=$(echo "$result" | jq -r '.data.status // .status // "unknown"')
+  finished=$(echo "$result" | jq -r '.data.finished // .finished // false')
+  stoppedAt=$(echo "$result" | jq -r '.data.stoppedAt // .stoppedAt // empty')
 
   # Prefer .status field (n8n 1.x+)
   if [ "$status" = "success" ] || [ "$status" = "error" ] || [ "$status" = "waiting" ] || [ "$status" = "crashed" ]; then
@@ -244,5 +253,18 @@ n8n_latest_execution() {
   local resp
   resp=$(curl -sf -b "$_N8N_COOKIE_JAR" \
     "$N8N_URL/rest/executions?workflowId=$workflow_id&limit=1" 2>/dev/null || echo '{}')
-  echo "$resp" | jq -r '.data[0].id // .data.results[0].id // "unknown"'
+  echo "$resp" | jq -r '.data.results[0].id // .data[0].id // "unknown"'
+}
+
+# Install the AxonFlow community node from npm (v1.0.0).
+# Required because n8n only recognizes community nodes installed
+# via the community-packages API, not from tarball file installs.
+n8n_install_axonflow_node() {
+  local resp
+  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/community-packages" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"@axonflow/n8n-nodes-axonflow"}' 2>/dev/null || echo '{}')
+  local version
+  version=$(echo "$resp" | jq -r '.data.installedVersion // "unknown"')
+  echo "  installed @axonflow/n8n-nodes-axonflow@$version from npm"
 }

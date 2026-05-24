@@ -26,7 +26,8 @@
         "triggerReason": "Amount exceeds threshold",
         "severity": "high",
         "limitWaitTime": 3600,
-        "requestContext": "{\"loan_id\": \"L-E2E-001\"}"
+        "requestContext": "{\"loan_id\": \"L-E2E-001\"}",
+        "idempotencyKey": "e2e-test-fixed-key"
       },
       "id": "2",
       "name": "AxonFlow Wait for Approval",

@@ -22,7 +22,8 @@
         "connectorType": "e2e-check-policy",
         "statement": "SELECT * FROM users WHERE role = 'admin'",
         "mcpOperation": "query",
-        "parameters": "{\"table\": \"users\"}"
+        "parameters": "{\"table\": \"users\"}",
+        "idempotencyKey": "e2e-test-fixed-key"
       },
       "id": "2",
       "name": "AxonFlow Check Policy",

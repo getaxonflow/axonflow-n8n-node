@@ -25,7 +25,8 @@
         "auditInput": "{\"loan_id\": \"L-E2E-002\"}",
         "auditOutput": "{}",
         "auditSuccess": false,
-        "auditErrorMessage": "downstream timeout"
+        "auditErrorMessage": "downstream timeout",
+        "idempotencyKey": "e2e-test-fixed-key"
       },
       "id": "2",
       "name": "AxonFlow Audit Log",

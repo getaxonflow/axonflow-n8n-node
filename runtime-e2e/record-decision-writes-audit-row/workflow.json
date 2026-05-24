@@ -25,7 +25,8 @@
         "auditInput": "{\"loan_id\": \"L-E2E-001\"}",
         "auditOutput": "{\"status\": \"approved\"}",
         "auditSuccess": true,
-        "auditErrorMessage": ""
+        "auditErrorMessage": "",
+        "idempotencyKey": "e2e-test-fixed-key"
       },
       "id": "2",
       "name": "AxonFlow Record Decision",

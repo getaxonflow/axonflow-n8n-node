@@ -22,7 +22,8 @@
         "connectorType": "credential_test",
         "statement": "n8n_credential_test_noop",
         "mcpOperation": "query",
-        "parameters": "{}"
+        "parameters": "{}",
+        "idempotencyKey": "e2e-test-fixed-key"
       },
       "id": "2",
       "name": "AxonFlow Cred Test",

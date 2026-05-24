@@ -23,7 +23,8 @@
         "connectorType": "e2e-failure-mode-open",
         "statement": "SELECT 1",
         "mcpOperation": "query",
-        "parameters": "{}"
+        "parameters": "{}",
+        "idempotencyKey": "e2e-test-fixed-key"
       },
       "id": "2",
       "name": "AxonFlow Fail Open",

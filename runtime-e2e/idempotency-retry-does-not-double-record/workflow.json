@@ -19,7 +19,7 @@
     {
       "parameters": {
         "operation": "recordDecision",
-        "idempotencyKey": "e2e-fixed-idem-key",
+        "idempotencyKey": "e2e-test-fixed-key",
         "toolName": "e2e_idem_tool",
         "workflowId": "wf-idem-test",
         "stepId": "idem-step",
