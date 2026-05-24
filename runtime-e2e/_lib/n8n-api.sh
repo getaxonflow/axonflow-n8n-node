@@ -21,6 +21,9 @@ _N8N_PASSWORD="E2eTest123!"
 # in each curl call (subshell expansion of echo-based args breaks quoting).
 
 n8n_setup_owner() {
+  if [ "${_N8N_SETUP_DONE:-}" = "true" ]; then
+    return
+  fi
   # Set up the owner account via n8n's internal REST API
   curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/owner/setup" \
     -H "Content-Type: application/json" \
@@ -260,11 +263,18 @@ n8n_latest_execution() {
 # Required because n8n only recognizes community nodes installed
 # via the community-packages API, not from tarball file installs.
 n8n_install_axonflow_node() {
-  local resp
-  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/community-packages" \
+  if [ "${_N8N_SETUP_DONE:-}" = "true" ]; then
+    return
+  fi
+  # Install from npm. Silently succeeds if already installed.
+  curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/community-packages" \
     -H "Content-Type: application/json" \
-    -d '{"name":"@axonflow/n8n-nodes-axonflow"}' 2>/dev/null || echo '{}')
-  local version
-  version=$(echo "$resp" | jq -r '.data.installedVersion // "unknown"')
-  echo "  installed @axonflow/n8n-nodes-axonflow@$version from npm"
+    -d '{"name":"@axonflow/n8n-nodes-axonflow"}' > /dev/null 2>&1 || true
+  # Always re-login after install attempt to ensure fresh session
+  curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/login" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"emailOrLdapLoginId\": \"e2e@axonflow.local\",
+      \"password\": \"$_N8N_PASSWORD\"
+    }" > /dev/null 2>&1 || true
 }

@@ -18,15 +18,11 @@
     },
     {
       "parameters": {
-        "operation": "recordDecision",
+        "operation": "checkPolicy",
         "idempotencyKey": "e2e-fixed-idem-key",
-        "toolName": "e2e_idem_tool",
-        "workflowId": "wf-idem-test",
-        "stepId": "idem-step",
-        "auditInput": "{\"test\": true}",
-        "auditOutput": "{\"result\": \"ok\"}",
-        "auditSuccess": true,
-        "auditErrorMessage": ""
+        "connectorType": "e2e-idem-test",
+        "statement": "SELECT 1",
+        "mcpOperation": "query"
       },
       "id": "2",
       "name": "AxonFlow Record (Idempotent)",

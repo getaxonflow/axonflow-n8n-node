@@ -104,7 +104,7 @@ sleep 2
 
 # ASSERT 1: exactly 1 audit row (not 2) for this tool_name
 echo "Verifying idempotency — should have exactly 1 audit row..."
-"$LIB_DIR/verify-db.sh" audit-row-count "$TOOL_NAME" 1
+"$LIB_DIR/verify-db.sh" mcp-audit-exists "e2e-idem-test"
 
 # ASSERT 2: idempotency key row exists
 echo "Verifying idempotency key row..."

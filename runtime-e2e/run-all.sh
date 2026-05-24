@@ -83,8 +83,12 @@ stack_up() {
   wait_for_health "$AGENT_URL/health" "axonflow-agent" 90
   wait_for_health "$N8N_URL/healthz" "n8n" 90
 
-  log "Installing node into n8n..."
-  bash "$LIB_DIR/install-node-into-n8n.sh"
+  log "Setting up n8n owner + installing AxonFlow node..."
+  source "$LIB_DIR/n8n-api.sh"
+  n8n_setup_owner
+  n8n_install_axonflow_node
+  export _N8N_SETUP_DONE=true
+  export _N8N_COOKIE_JAR
 
   log "Stack ready"
 }
@@ -141,6 +145,14 @@ main() {
   if [ "$SKIP_UP" = "false" ]; then
     trap stack_down EXIT
     stack_up
+  else
+    # Even with --skip-up, setup owner + install node
+    log "Setting up n8n owner + installing AxonFlow node (skip-up mode)..."
+    source "$LIB_DIR/n8n-api.sh"
+    n8n_setup_owner
+    n8n_install_axonflow_node
+    export _N8N_SETUP_DONE=true
+    export _N8N_COOKIE_JAR
   fi
 
   run_probe "n8n-can-install-the-node"
