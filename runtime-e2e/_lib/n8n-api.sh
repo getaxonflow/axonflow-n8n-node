@@ -35,26 +35,27 @@ n8n_setup_owner() {
     sleep 1
   done
 
-  # Setup owner (idempotent — returns 400 if already exists)
-  curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/owner/setup" \
+  # Setup owner — log output so CI failures are diagnosable
+  local setup_resp
+  setup_resp=$(curl -s -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/owner/setup" \
     -H "Content-Type: application/json" \
     -d "{
       \"email\": \"e2e@axonflow.local\",
       \"firstName\": \"E2E\",
       \"lastName\": \"Test\",
       \"password\": \"$_N8N_PASSWORD\"
-    }" > /dev/null 2>&1 || true
+    }" 2>&1)
+  echo "  owner setup: $(echo "$setup_resp" | head -c 200)"
 
-  # Login with retry (n8n rate-limits at 5 attempts / 5 min)
-  for attempt in 1 2 3; do
-    curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/login" \
-      -H "Content-Type: application/json" \
-      -d "{
-        \"emailOrLdapLoginId\": \"e2e@axonflow.local\",
-        \"password\": \"$_N8N_PASSWORD\"
-      }" > /dev/null 2>&1 && break
-    sleep 2
-  done
+  # Login — setup may also set the cookie but login explicitly
+  local login_resp
+  login_resp=$(curl -s -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/login" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"emailOrLdapLoginId\": \"e2e@axonflow.local\",
+      \"password\": \"$_N8N_PASSWORD\"
+    }" 2>&1)
+  echo "  login: $(echo "$login_resp" | head -c 200)"
 
   # Verify cookie was set
   if grep -q "n8n-auth" "$_N8N_COOKIE_JAR" 2>/dev/null; then
