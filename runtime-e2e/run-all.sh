@@ -151,6 +151,9 @@ main() {
     source "$LIB_DIR/n8n-api.sh"
     n8n_setup_owner
     n8n_install_axonflow_node
+    # Wait for n8n to reload after node install
+    log "Waiting 5s for n8n to load installed node..."
+    sleep 5
     export _N8N_SETUP_DONE=true
     export _N8N_COOKIE_JAR
   fi
