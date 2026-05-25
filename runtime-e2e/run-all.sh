@@ -151,9 +151,18 @@ main() {
     source "$LIB_DIR/n8n-api.sh"
     n8n_setup_owner
     n8n_install_axonflow_node
-    # Wait for n8n to reload after node install
-    log "Waiting 5s for n8n to load installed node..."
-    sleep 5
+    # Restart n8n after installing community node so webhook handlers load
+    log "Restarting n8n to load installed node..."
+    docker restart e2e-n8n > /dev/null 2>&1 || true
+    for i in $(seq 1 60); do
+      if curl -sf -o /dev/null --max-time 2 "$N8N_URL/healthz" 2>/dev/null; then
+        log "n8n restarted (${i}s)"
+        break
+      fi
+      sleep 1
+    done
+    # Re-login after restart (session cookie invalidated)
+    n8n_setup_owner
     export _N8N_SETUP_DONE=true
     export _N8N_COOKIE_JAR
   fi
