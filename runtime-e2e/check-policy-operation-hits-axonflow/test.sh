@@ -49,7 +49,9 @@ echo "Workflow active: $ACTIVE"
 
 # 4. Trigger via webhook
 echo "Triggering webhook: $WEBHOOK_PATH"
-n8n_trigger_webhook "$WEBHOOK_PATH" '{"test":true}'
+TRIGGER_RESP=$(curl -s -w "\nHTTP_%{http_code}" -X POST "$N8N_URL/webhook/$WEBHOOK_PATH" \
+  -H "Content-Type: application/json" -d '{"test":true}' 2>&1)
+echo "Webhook response: $TRIGGER_RESP"
 sleep 3
 
 # 5. Get execution and wait
