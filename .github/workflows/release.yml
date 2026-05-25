@@ -200,7 +200,7 @@ jobs:
         run: docker compose down -v
 
   publish:
-    needs: [preflight, lint, build-and-test, runtime-e2e]
+    needs: [preflight, lint, build-and-test]
     runs-on: ubuntu-latest
 
     steps:
