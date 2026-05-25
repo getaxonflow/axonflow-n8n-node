@@ -22,9 +22,19 @@ _N8N_PASSWORD="E2eTest123!"
 
 n8n_setup_owner() {
   # With N8N_USER_MANAGEMENT_DISABLED=true, no auth is needed.
-  # The REST API works without cookies or API keys.
-  # This function is a no-op but kept for interface compatibility.
-  true
+  # But we need to wait for the REST API to be fully ready —
+  # /healthz responds before /rest/ endpoints are initialized.
+  echo "  waiting for n8n REST API readiness..."
+  for i in $(seq 1 30); do
+    local resp
+    resp=$(curl -sf "$N8N_URL/rest/workflows" 2>/dev/null || echo "")
+    if echo "$resp" | jq -e '.data' > /dev/null 2>&1; then
+      echo "  n8n REST API ready (${i}s)"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "  WARN: n8n REST API not ready after 30s, proceeding anyway"
 }
 
 # Create an AxonFlow credential in n8n.
@@ -231,8 +241,26 @@ n8n_install_axonflow_node() {
   if [ "${_N8N_SETUP_DONE:-}" = "true" ]; then
     return
   fi
-  # Install from npm. Silently succeeds if already installed.
-  curl -sf -X POST "$N8N_URL/rest/community-packages" \
-    -H "Content-Type: application/json" \
-    -d '{"name":"@axonflow/n8n-nodes-axonflow"}' > /dev/null 2>&1 || true
+  # Install from npm with retry (the endpoint may not be ready immediately).
+  for i in 1 2 3; do
+    local resp
+    resp=$(curl -sf -X POST "$N8N_URL/rest/community-packages" \
+      -H "Content-Type: application/json" \
+      -d '{"name":"@axonflow/n8n-nodes-axonflow"}' 2>/dev/null || echo "")
+    if echo "$resp" | jq -e '.data.installedVersion' > /dev/null 2>&1; then
+      local ver
+      ver=$(echo "$resp" | jq -r '.data.installedVersion')
+      echo "  installed @axonflow/n8n-nodes-axonflow@$ver"
+      return 0
+    fi
+    # Check if already installed (duplicate install returns error)
+    local check
+    check=$(curl -sf "$N8N_URL/rest/community-packages" 2>/dev/null || echo "")
+    if echo "$check" | jq -e '.data[] | select(.packageName == "@axonflow/n8n-nodes-axonflow")' > /dev/null 2>&1; then
+      echo "  @axonflow/n8n-nodes-axonflow already installed"
+      return 0
+    fi
+    sleep 3
+  done
+  echo "  WARN: could not install @axonflow/n8n-nodes-axonflow after 3 attempts"
 }
