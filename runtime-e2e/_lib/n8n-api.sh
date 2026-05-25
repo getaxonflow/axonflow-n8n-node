@@ -11,30 +11,57 @@ N8N_URL="${N8N_URL:-http://localhost:15678}"
 # n8n requires an owner account to be set up before the API can be used.
 # This function creates the owner if not already set up, then obtains
 # an API key (or cookie) for subsequent calls.
+
+_N8N_PASSWORD="E2eTest123!"
 _N8N_COOKIE_JAR="${WORK:-/tmp}/.n8n-cookies"
 
-_N8N_API_KEY=""
-_N8N_PASSWORD="E2eTest123!"
-
-# n8n auth: all curl calls use cookie auth via the cookie jar.
-# The _n8n_auth_args function is replaced by direct
-# in each curl call (subshell expansion of echo-based args breaks quoting).
-
 n8n_setup_owner() {
-  # With N8N_USER_MANAGEMENT_DISABLED=true, no auth is needed.
-  # But we need to wait for the REST API to be fully ready —
-  # /healthz responds before /rest/ endpoints are initialized.
-  echo "  waiting for n8n REST API readiness..."
-  for i in $(seq 1 30); do
-    local resp
-    resp=$(curl -sf "$N8N_URL/rest/workflows" 2>/dev/null || echo "")
-    if echo "$resp" | jq -e '.data' > /dev/null 2>&1; then
-      echo "  n8n REST API ready (${i}s)"
-      return 0
+  if [ "${_N8N_SETUP_DONE:-}" = "true" ]; then
+    return
+  fi
+
+  # Wait for REST API readiness (n8n initializes /rest/ after /healthz)
+  echo "  waiting for n8n REST API..."
+  for i in $(seq 1 60); do
+    local check
+    check=$(curl -s -o /dev/null -w "%{http_code}" "$N8N_URL/rest/login" 2>/dev/null || echo "000")
+    if [ "$check" != "000" ] && [ "$check" != "502" ] && [ "$check" != "503" ]; then
+      echo "  n8n REST API responding (HTTP $check, ${i}s)"
+      break
+    fi
+    if [ "$i" -eq 60 ]; then
+      echo "  WARN: n8n REST API not responding after 60s"
     fi
     sleep 1
   done
-  echo "  WARN: n8n REST API not ready after 30s, proceeding anyway"
+
+  # Setup owner (idempotent — returns 400 if already exists)
+  curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/owner/setup" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"email\": \"e2e@axonflow.local\",
+      \"firstName\": \"E2E\",
+      \"lastName\": \"Test\",
+      \"password\": \"$_N8N_PASSWORD\"
+    }" > /dev/null 2>&1 || true
+
+  # Login with retry (n8n rate-limits at 5 attempts / 5 min)
+  for attempt in 1 2 3; do
+    curl -sf -c "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/login" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"emailOrLdapLoginId\": \"e2e@axonflow.local\",
+        \"password\": \"$_N8N_PASSWORD\"
+      }" > /dev/null 2>&1 && break
+    sleep 2
+  done
+
+  # Verify cookie was set
+  if grep -q "n8n-auth" "$_N8N_COOKIE_JAR" 2>/dev/null; then
+    echo "  n8n session established"
+  else
+    echo "  WARN: no n8n session cookie obtained"
+  fi
 }
 
 # Create an AxonFlow credential in n8n.
@@ -43,7 +70,7 @@ n8n_setup_owner() {
 n8n_create_credential() {
   local name="$1" endpoint="$2" client_id="$3" user_token="$4"
   local resp
-  resp=$(curl -sf -X POST "$N8N_URL/rest/credentials" \
+  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/credentials" \
     -H "Content-Type: application/json" \
     -d "$(cat <<CRED_EOF
 {
@@ -82,7 +109,7 @@ n8n_import_workflow() {
   fi
 
   local resp
-  resp=$(curl -sf -X POST "$N8N_URL/rest/workflows" \
+  resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows" \
     -H "Content-Type: application/json" \
     -d "$workflow_json")
   echo "$resp" | jq -r '.data.id // .id' 2>/dev/null || echo ""
@@ -94,13 +121,13 @@ n8n_import_workflow() {
 n8n_activate_workflow() {
   local workflow_id="$1"
   local version_id
-  version_id=$(curl -sf "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null | jq -r '.data.versionId // ""' 2>/dev/null || echo "" 2>/dev/null || echo "")
+  version_id=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null | jq -r '.data.versionId // ""' 2>/dev/null || echo "" 2>/dev/null || echo "")
   if [ -n "$version_id" ]; then
-    curl -s -X POST "$N8N_URL/rest/workflows/$workflow_id/activate" \
+    curl -s -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$workflow_id/activate" \
       -H "Content-Type: application/json" \
       -d "{\"versionId\":\"$version_id\"}" > /dev/null 2>&1 || true
   else
-    curl -s -X PATCH "$N8N_URL/rest/workflows/$workflow_id" \
+    curl -s -b "$_N8N_COOKIE_JAR" -X PATCH "$N8N_URL/rest/workflows/$workflow_id" \
       -H "Content-Type: application/json" \
       -d '{"active": true}' > /dev/null 2>&1 || true
   fi
@@ -133,7 +160,7 @@ n8n_trigger_webhook() {
 # Args: <execution_id>
 n8n_get_execution() {
   local execution_id="$1"
-  curl -sf "$N8N_URL/rest/executions/$execution_id" 2>/dev/null || echo '{}'
+  curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/executions/$execution_id" 2>/dev/null || echo '{}'
 }
 
 # Get the terminal status of an execution: "success", "error", or "unknown".
@@ -204,7 +231,7 @@ n8n_node_output() {
 # Args: <workflow_id>
 n8n_delete_workflow() {
   local workflow_id="$1"
-  curl -sf -X DELETE "$N8N_URL/rest/workflows/$workflow_id" \
+  curl -sf -b "$_N8N_COOKIE_JAR" -X DELETE "$N8N_URL/rest/workflows/$workflow_id" \
     > /dev/null 2>&1 || true
 }
 
@@ -244,7 +271,7 @@ n8n_install_axonflow_node() {
   # Install from npm with retry (the endpoint may not be ready immediately).
   for i in 1 2 3; do
     local resp
-    resp=$(curl -sf -X POST "$N8N_URL/rest/community-packages" \
+    resp=$(curl -sf -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/community-packages" \
       -H "Content-Type: application/json" \
       -d '{"name":"@axonflow/n8n-nodes-axonflow"}' 2>/dev/null || echo "")
     if echo "$resp" | jq -e '.data.installedVersion' > /dev/null 2>&1; then
@@ -255,7 +282,7 @@ n8n_install_axonflow_node() {
     fi
     # Check if already installed (duplicate install returns error)
     local check
-    check=$(curl -sf "$N8N_URL/rest/community-packages" 2>/dev/null || echo "")
+    check=$(curl -sf -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/community-packages" 2>/dev/null || echo "")
     if echo "$check" | jq -e '.data[] | select(.packageName == "@axonflow/n8n-nodes-axonflow")' > /dev/null 2>&1; then
       echo "  @axonflow/n8n-nodes-axonflow already installed"
       return 0
