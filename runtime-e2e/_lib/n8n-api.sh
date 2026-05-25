@@ -258,10 +258,19 @@ n8n_activate_and_trigger() {
 # Returns: execution ID on stdout
 n8n_latest_execution() {
   local workflow_id="$1"
-  local resp
-  resp=$(curl -sf \
-    "$N8N_URL/rest/executions?workflowId=$workflow_id&limit=1" 2>/dev/null || echo '{}')
-  echo "$resp" | jq -r '.data.results[0].id // .data[0].id // "unknown"' 2>/dev/null || echo ""
+  for i in $(seq 1 10); do
+    local resp
+    resp=$(curl -sf -b "$_N8N_COOKIE_JAR" \
+      "$N8N_URL/rest/executions?workflowId=$workflow_id&limit=1" 2>/dev/null || echo '{}')
+    local exec_id
+    exec_id=$(echo "$resp" | jq -r '.data.results[0].id // .data[0].id // ""' 2>/dev/null || echo "")
+    if [ -n "$exec_id" ] && [ "$exec_id" != "null" ]; then
+      echo "$exec_id"
+      return
+    fi
+    sleep 1
+  done
+  echo "unknown"
 }
 
 # Install the AxonFlow community node from npm (v1.0.0).
