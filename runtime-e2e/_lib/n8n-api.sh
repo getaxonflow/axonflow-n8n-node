@@ -20,17 +20,19 @@ n8n_setup_owner() {
     return
   fi
 
-  # Wait for REST API readiness (n8n initializes /rest/ after /healthz)
+  # Wait for REST API readiness.
+  # n8n returns HTTP 200 with "n8n is starting up. Please wait" during init.
+  # We must wait until the response is NOT that startup message.
   echo "  waiting for n8n REST API..."
-  for i in $(seq 1 60); do
-    local check
-    check=$(curl -s -o /dev/null -w "%{http_code}" "$N8N_URL/rest/login" 2>/dev/null || echo "000")
-    if [ "$check" != "000" ] && [ "$check" != "502" ] && [ "$check" != "503" ]; then
-      echo "  n8n REST API responding (HTTP $check, ${i}s)"
+  for i in $(seq 1 90); do
+    local body
+    body=$(curl -sf "$N8N_URL/rest/login" 2>/dev/null || echo "")
+    if [ -n "$body" ] && ! echo "$body" | grep -q "starting up" 2>/dev/null; then
+      echo "  n8n REST API ready (${i}s)"
       break
     fi
-    if [ "$i" -eq 60 ]; then
-      echo "  WARN: n8n REST API not responding after 60s"
+    if [ "$i" -eq 90 ]; then
+      echo "  WARN: n8n REST API not ready after 90s"
     fi
     sleep 1
   done
