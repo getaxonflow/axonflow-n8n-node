@@ -132,6 +132,9 @@ test('recordDecision posts to /api/v1/audit/tool-call with success=true + tool_t
 	assert.equal(req.url, 'https://axonflow.local/api/v1/audit/tool-call');
 	assert.equal(req.headers?.['Idempotency-Key'], 'idem-decision-1');
 	assert.equal(req.body?.tool_name, 'approve_loan');
+	// Dual-send: caller_name is the current client-identity field, tool_type the
+	// deprecated fallback. Both must be on the wire during the deprecation window.
+	assert.equal(req.body?.caller_name, 'n8n_decision');
 	assert.equal(req.body?.tool_type, 'n8n_decision');
 	assert.equal(req.body?.user_id, 'utok-xyz');
 	assert.equal(req.body?.success, true);
@@ -156,6 +159,8 @@ test('auditLog posts to /api/v1/audit/tool-call with tool_type=n8n_audit', async
 
 	const req = requests[0];
 	assert.equal(req.url, 'https://axonflow.local/api/v1/audit/tool-call');
+	// Dual-send: caller_name (current) + tool_type (deprecated fallback).
+	assert.equal(req.body?.caller_name, 'n8n_audit');
 	assert.equal(req.body?.tool_type, 'n8n_audit');
 	assert.equal(req.body?.user_id, 'utok-xyz');
 	assert.equal(req.body?.success, false);

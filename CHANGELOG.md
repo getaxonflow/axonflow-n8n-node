@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-18
+
+### Changed
+
+- Audit/decision calls now dual-send `caller_name` (the current client-identity
+  field) alongside the deprecated `tool_type` on `POST /api/v1/audit/tool-call`.
+  The literal values are unchanged (`n8n_audit` for `auditLog`, `n8n_decision`
+  for `recordDecision`). Platforms with `caller_name` support (v9.11.0+) attribute
+  from `caller_name`; older platforms continue to read `tool_type` (precedence:
+  `caller_name` > `tool_type` > default), so attribution is correct on both.
+
 ## [1.0.2] - 2026-05-24
 
 ### Fixed (caught by runtime E2E)
