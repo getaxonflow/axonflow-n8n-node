@@ -363,6 +363,12 @@ export class AxonFlow implements INodeType {
 								idempotencyKey,
 								body: {
 									tool_name: this.getNodeParameter('toolName', i) as string,
+									// Client identity. `caller_name` is the current field; `tool_type`
+									// is the deprecated fallback the platform still honors (precedence:
+									// caller_name > tool_type > default). Dual-send both during the
+									// deprecation window so attribution is correct on platforms with
+									// caller_name support (v9.11.0+) and unchanged on older ones.
+									caller_name: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
 									tool_type: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
 									user_id: String(credentials.userToken || ''),
 									workflow_id: this.getNodeParameter('workflowId', i) as string,
