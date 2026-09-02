@@ -64,6 +64,12 @@ npm install @axonflow/n8n-nodes-axonflow
 2. **Idempotency by default.** Every operation sends `Idempotency-Key: {executionId}-{itemIndex}-{nodeName}` so n8n's `Retry on Fail` doesn't double-record. Override at the node parameter level if you need a domain-specific key.
 3. **HITL pairs with the Wait node.** `Wait for Approval` creates the AxonFlow approval entry; pair it with a downstream Wait node configured for **On Webhook Call** mode. As of platform v8.1.0+, pass the Wait node's webhook URL as `notify_url` in the HITL queue request and AxonFlow will POST to it automatically on approval/rejection — no polling sidecar needed. For self-hosted deployments on v8.0.x, two manual paths work: (a) run a small **polling sidecar** that watches `GET /api/v1/hitl/queue/{id}` and POSTs to the Wait node's webhook URL when status changes, or (b) have a reviewer trigger the resume URL manually from the portal. See the [n8n integration docs](https://docs.getaxonflow.com/docs/integration/n8n/#hitl) for details.
 
+## Client identification
+
+Every call this node makes to AxonFlow carries `X-Axonflow-Client: n8n-plugin/<version>`, set once on the credential so it rides every operation. The version is read from this package's own metadata.
+
+**What this is and is not.** It is attribution on a request the platform already receives — no additional request is made, and **this node sends no heartbeat or telemetry ping of its own**. It is never used for authentication: the platform authenticates on the `Authorization` header, so a missing or mangled value cannot fail a call. Nothing about your workflow data, statements, parameters, or identity is added by it.
+
 ## Example workflow
 
 [`examples/governed-loan-workflow.json`](./examples/governed-loan-workflow.json) — an importable workflow that:

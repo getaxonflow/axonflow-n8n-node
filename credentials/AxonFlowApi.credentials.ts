@@ -14,6 +14,15 @@ import {
  * (https://github.com/n8n-io/n8n/issues/15261), so credentials would appear
  * configured but every AxonFlow call would 401.
  */
+import { version as pluginVersion } from '../package.json';
+
+/**
+ * The id half is the `<name>-plugin` form the server's plugin vocabulary uses.
+ * An id the server's validator does not know is dropped SILENTLY, so this
+ * string and the platform allowlist have to move together (enterprise#3672).
+ */
+export const AXONFLOW_CLIENT_VALUE = `n8n-plugin/${pluginVersion}`;
+
 export class AxonFlowApi implements ICredentialType {
 	name = 'axonFlowApi';
 
@@ -73,6 +82,22 @@ export class AxonFlowApi implements ICredentialType {
 			headers: {
 				Authorization:
 					'=Basic {{ Buffer.from($credentials.clientId + ":" + $credentials.userToken).toString("base64") }}',
+				// ADR-050 §4 client identification, on every governed call.
+				//
+				// This is the ONE site: every operation in the node goes through
+				// `httpRequestWithAuthentication` with this credential, so a header
+				// set here rides all of them and no call site can forget it.
+				//
+				// Before this, requests from this node reached the platform with no
+				// identity at all - n8n adoption was invisible to the client-version
+				// counter, the checkpoint pipeline and the Community-SaaS stream at
+				// once, and indistinguishable from an anonymous caller.
+				//
+				// Attribution, never authentication: the platform authenticates on
+				// the Authorization header above and must ignore this one for that
+				// purpose, so a missing or mangled value can never fail a call. It
+				// adds no request, and this node sends no heartbeat of its own.
+				'X-Axonflow-Client': AXONFLOW_CLIENT_VALUE,
 			},
 		},
 	};

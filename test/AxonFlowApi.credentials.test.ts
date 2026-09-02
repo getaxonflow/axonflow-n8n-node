@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AxonFlowApi } from '../credentials/AxonFlowApi.credentials';
+import { AxonFlowApi, AXONFLOW_CLIENT_VALUE } from '../credentials/AxonFlowApi.credentials';
+import pkg from '../package.json';
 
 test('credential uses Header Auth pattern (Authorization in authenticate.headers), NOT Bearer Auth class', () => {
 	const cred = new AxonFlowApi();
@@ -58,5 +59,49 @@ test('credential has endpoint + clientId + userToken properties, userToken is pa
 			?.password,
 		true,
 		'userToken must be a password field',
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Client identification (enterprise#3672)
+//
+// Before this, every request from this node reached the platform carrying no
+// identity: n8n adoption was invisible to the client-version counter, the
+// checkpoint pipeline and the Community-SaaS stream at once, and
+// indistinguishable from an anonymous caller.
+// ---------------------------------------------------------------------------
+
+test('every governed call carries X-Axonflow-Client from the credential', () => {
+	const cred = new AxonFlowApi();
+	const headers = (cred.authenticate.properties as { headers: Record<string, string> }).headers;
+	assert.equal(
+		headers['X-Axonflow-Client'],
+		AXONFLOW_CLIENT_VALUE,
+		'the credential is the ONE seam every operation authenticates through; a header set anywhere else would be per-call-site and forgettable',
+	);
+	// ...and it must not have displaced the header the platform actually
+	// authenticates on.
+	assert.match(headers.Authorization, /=Basic /);
+});
+
+test('the client id is exactly the string the server vocabulary knows', () => {
+	// Pinned as a literal rather than read back from the constant, deliberately:
+	// an id the server's validator does not know is dropped SILENTLY, so a
+	// rename must be an explicit edit here paired with the platform allowlist,
+	// never a quiet drift.
+	assert.match(
+		AXONFLOW_CLIENT_VALUE,
+		/^n8n-plugin\/[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*$/,
+		`X-Axonflow-Client value ${AXONFLOW_CLIENT_VALUE} must be n8n-plugin/<semver>`,
+	);
+});
+
+test('the version comes from package metadata, not a literal', () => {
+	// A hand-maintained version silently goes stale on the first release that
+	// forgets it, and the counter then attributes new installs to an old build.
+	assert.equal(
+		AXONFLOW_CLIENT_VALUE,
+		`n8n-plugin/${pkg.version}`,
+		'the version half must be derived from package.json',
 	);
 });
