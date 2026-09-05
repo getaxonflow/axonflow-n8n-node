@@ -9,6 +9,8 @@ import {
 	IHttpRequestOptions,
 } from 'n8n-workflow';
 
+import { PEP_HANDSHAKE_HEADER, buildPepHandshake } from './pep-handshake';
+
 /**
  * AxonFlow node — calls AxonFlow API endpoints from an n8n workflow.
  *
@@ -309,6 +311,12 @@ export class AxonFlow implements INodeType {
 		const credentials = await this.getCredentials('axonFlowApi');
 		const endpoint = String(credentials.endpoint || '').replace(/\/+$/, '');
 		const clientId = String(credentials.clientId || '');
+		// ADR-065 capability handshake, rendered ONCE per execution rather than
+		// per item. A malformed audience throws here, before any governed call is
+		// made, rather than 400-ing every request in production.
+		const pepHandshake = buildPepHandshake(
+			String(credentials.pepAudience || '').trim() || undefined,
+		);
 
 		const returnData: INodeExecutionData[] = [];
 
@@ -336,6 +344,7 @@ export class AxonFlow implements INodeType {
 								method: 'POST',
 								path: '/api/v1/mcp/check-input',
 								idempotencyKey,
+								pepHandshake,
 								body: {
 									client_id: clientId,
 									user_token: String(credentials.userToken || ''),
@@ -500,6 +509,16 @@ interface BuildRequestArgs {
 	path: string;
 	idempotencyKey: string;
 	body?: IDataObject;
+	/**
+	 * The ADR-065 capability declaration, or undefined.
+	 *
+	 * Passed per call site rather than read from a module-level value because
+	 * only the GOVERNED routes carry it: the platform reads the declaration on
+	 * the policy-evaluating routes and nowhere else, so presenting it on the
+	 * audit and HITL calls would inflate the adoption denominator with routes
+	 * that evaluate nothing.
+	 */
+	pepHandshake?: string;
 }
 
 function buildRequest(args: BuildRequestArgs): IHttpRequestOptions {
@@ -509,6 +528,12 @@ function buildRequest(args: BuildRequestArgs): IHttpRequestOptions {
 	};
 	if (args.idempotencyKey) {
 		headers['Idempotency-Key'] = args.idempotencyKey;
+	}
+	// ADR-065 capability handshake (axonflow-enterprise#3763). Omitted entirely
+	// when unconfigured: a PRESENT-but-empty value is MALFORMED to the platform
+	// and refuses the request, which an absent header does not.
+	if (args.pepHandshake) {
+		headers[PEP_HANDSHAKE_HEADER] = args.pepHandshake;
 	}
 
 	return {

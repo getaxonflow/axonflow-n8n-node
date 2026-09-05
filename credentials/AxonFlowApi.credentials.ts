@@ -60,6 +60,19 @@ export class AxonFlowApi implements ICredentialType {
 				'AxonFlow user token. Sent as the password half of HTTP Basic auth.',
 			required: true,
 		},
+		{
+			displayName: 'PEP Capability Handshake Audience',
+			name: 'pepAudience',
+			type: 'string',
+			default: '',
+			required: false,
+			description:
+				'Optional. The audience your AxonFlow decision proofs are bound to. ' +
+				'Set it and the node declares what it can enforce on every governed call ' +
+				'(ADR-065 capability handshake), so the platform refuses to hand it an ' +
+				'obligation it cannot discharge instead of assuming it will. Leave empty ' +
+				'and no header is sent and nothing changes.',
+		},
 	];
 
 	/**

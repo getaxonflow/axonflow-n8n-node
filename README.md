@@ -11,12 +11,53 @@ This package contributes a single `AxonFlow` node with four operations against a
 
 | Operation | Endpoint | When to use |
 |---|---|---|
-| **Check Policy** | `POST /api/v1/mcp/check-input` | Before a workflow takes a sensitive action — receive `{allowed, block_reason?}` and branch on it. |
+| **Check Policy** | `POST /api/v1/mcp/check-input` | Before a workflow takes a sensitive action — receive `{allowed, block_reason?}` and branch on it. On a redact-not-block allow it also returns the masked text; see **Redaction: your workflow must use the masked text** below. |
 | **Record Decision** | `POST /api/v1/audit/tool-call` | After a successful action — capture inputs, outputs, policies applied. |
 | **Audit Log** | `POST /api/v1/audit/tool-call` | From error branches — record the failed action with `success: false` and `error_message`. |
 | **Wait for Approval** | `POST /api/v1/hitl/queue` | When the workflow needs a human in the loop — creates an approval entry and pairs with an n8n Wait node for webhook resume. |
 
 Plus a single `AxonFlow API` credential type holding the endpoint + Basic-auth (`clientId` + `userToken`).
+
+## Redaction: your workflow must use the masked text
+
+**Check Policy can allow an action and still require that you change it.** When
+the statement you submitted carried sensitive data under a redact-not-block
+policy, AxonFlow allows the call and returns the masked version alongside it:
+
+```json
+{
+  "allowed": true,
+  "redacted": true,
+  "redaction_evaluated": true,
+  "redacted_statement": "transfer to [REDACTED]"
+}
+```
+
+**This node passes those fields through to your workflow unchanged, and does
+nothing else with them.** It does not rewrite the action, and it cannot: the
+node has no way to know which of your downstream parameters the statement came
+from. Applying the redaction is your workflow's job.
+
+**So when `redacted_statement` is present, use it in place of the original.** A
+workflow that branches only on `allowed` will proceed with the unmasked text,
+and the platform's audit record will show a redaction that your workflow did not
+apply.
+
+Two rules worth building in:
+
+- **Treat `redaction_evaluated` as the trust signal.** When it is absent or
+  false the redaction detector did not run, so "no masked text" means "nothing
+  looked", not "nothing found". Fail closed there rather than proceeding.
+- **AxonFlow will not redact for you.** Substituting the masked text it returns
+  is the sanctioned way to satisfy a redaction policy; masking the text yourself
+  is not, because your patterns and the platform's will disagree.
+
+This applies on every AxonFlow edition. On Community the call is allowed and
+recorded either way, so **this paragraph is the control** - nothing downstream
+will stop an unmasked value for you. On Enterprise the platform can additionally
+refuse a call whose enforcement point has declared it cannot apply a redaction;
+this node declares exactly that, honestly, because it performs no substitution
+of its own.
 
 ## Install
 

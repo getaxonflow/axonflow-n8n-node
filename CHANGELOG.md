@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-05
+
+### Added
+
+- **The node now declares what it can enforce** (ADR-065 capability handshake; axonflow-enterprise#3763). Set **PEP Capability Handshake Audience** on the AxonFlow credential and every governed call carries `X-Axonflow-PEP-Handshake`, a short document naming this enforcement point and the obligation types it can discharge. Leave it empty and no header is sent and nothing changes.
+- **The node declares NO capabilities, and that is the honest answer.** A redaction obligation is discharged by substituting the platform's engine-masked text for the original, and this node performs no substitution: Check Policy returns the platform's response as the node output and your workflow decides what to do with it. The node cannot promise on a workflow's behalf, so it claims nothing. On an Enterprise platform that means a governed call carrying a mandatory redaction obligation is refused rather than allowed on the strength of a substitution the node does not perform.
+
+### Changed
+
+- **README: a new section, "Redaction: your workflow must use the masked text".** Check Policy can allow an action and still require you to change it. The node passes `redacted_statement`, `redaction_evaluated` and `redacted` through to your workflow unmodified (now pinned by a test), and applying them is the workflow's job: a workflow that branches only on `allowed` proceeds with the unmasked text. On a Community platform nothing downstream will stop that, so the documentation is the control.
+
 ## [1.1.0] - 2026-07-18
 
 ### Changed
