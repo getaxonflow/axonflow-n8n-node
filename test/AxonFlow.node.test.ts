@@ -652,3 +652,83 @@ test('credentials list requires AxonFlow API and operation enum has exactly the 
 		'waitForApproval',
 	]);
 });
+
+test('checkPolicy sends the capability handshake when an audience is configured', async () => {
+	const { requests } = await runExecute({
+		params: {
+			operation: 'checkPolicy',
+			idempotencyKey: 'exec-1-0-AxonFlow1',
+			connectorType: 'n8n',
+			statement: 'hello',
+			mcpOperation: 'execute',
+			parameters: '{}',
+		},
+		credentials: {
+			endpoint: 'https://axonflow.local',
+			clientId: 'tenant-abc',
+			userToken: 'utok-xyz',
+			pepAudience: 'axonflow-decision-proof',
+		},
+		responses: [{ allowed: true }],
+	});
+
+	assert.equal(
+		requests[0].headers?.['X-Axonflow-PEP-Handshake'],
+		'eyJwcm9maWxlX3ZlcnNpb24iOjEsInBlcF9pZCI6Im44bi1ub2RlIiwiYXVkaWVuY2UiOiJheG9uZmxvdy1kZWNpc2lvbi1wcm9vZiIsImNhcGFiaWxpdGllcyI6W119',
+	);
+});
+
+test('no handshake header at all when no audience is configured', async () => {
+	// ABSENT, not empty. A PRESENT-but-empty value is MALFORMED to the platform
+	// and refuses the request, which an absent header does not - so an `if`
+	// that was dropped would turn every unconfigured install into a 400.
+	const { requests } = await runExecute({
+		params: {
+			operation: 'checkPolicy',
+			idempotencyKey: 'exec-1-0-AxonFlow1',
+			connectorType: 'n8n',
+			statement: 'hello',
+			mcpOperation: 'execute',
+			parameters: '{}',
+		},
+		responses: [{ allowed: true }],
+	});
+
+	assert.ok(!('X-Axonflow-PEP-Handshake' in (requests[0].headers ?? {})));
+});
+
+test('the node passes redacted_statement and redaction_evaluated through UNMODIFIED', async () => {
+	// This is what makes the node's EMPTY capability declaration honest rather
+	// than merely convenient.
+	//
+	// The node declares no redaction capability because it performs no
+	// substitution: it hands the platform's answer to the workflow, and the
+	// workflow decides. That is only a defensible position if the masked text
+	// actually REACHES the workflow. If the node filtered these fields out, a
+	// workflow author could not act on them even in principle, and the node
+	// would be withholding the only means of discharging the obligation while
+	// declining to discharge it itself.
+	//
+	// Asserted rather than assumed, because `json: result` passing the body
+	// through verbatim is exactly the kind of thing a later refactor narrows to
+	// a named subset.
+	const masked = 'transfer to [REDACTED]';
+	const { result } = await runExecute({
+		params: {
+			operation: 'checkPolicy',
+			idempotencyKey: 'exec-1-0-AxonFlow1',
+			connectorType: 'n8n',
+			statement: 'transfer to sarah.chen@example.com',
+			mcpOperation: 'execute',
+			parameters: '{}',
+		},
+		responses: [
+			{ allowed: true, redacted: true, redaction_evaluated: true, redacted_statement: masked },
+		],
+	});
+
+	const out = result[0][0].json as Record<string, unknown>;
+	assert.equal(out.redacted_statement, masked);
+	assert.equal(out.redaction_evaluated, true);
+	assert.equal(out.redacted, true);
+});
