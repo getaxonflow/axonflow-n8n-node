@@ -103,7 +103,6 @@ test('checkPolicy posts to /api/v1/mcp/check-input with Idempotency-Key', async 
 	assert.equal(req.headers?.['Content-Type'], 'application/json');
 	assert.deepEqual(req.body, {
 		client_id: 'tenant-abc',
-		user_token: 'utok-xyz',
 		tenant_id: 'tenant-abc',
 		connector_type: 'n8n',
 		statement: 'transfer $5000',
@@ -136,7 +135,7 @@ test('recordDecision posts to /api/v1/audit/tool-call with success=true + tool_t
 	// deprecated fallback. Both must be on the wire during the deprecation window.
 	assert.equal(req.body?.caller_name, 'n8n_decision');
 	assert.equal(req.body?.tool_type, 'n8n_decision');
-	assert.equal(req.body?.user_id, 'utok-xyz');
+	assert.equal(req.body?.user_id, undefined, 'the credential secret is never sent as a user id');
 	assert.equal(req.body?.success, true);
 	assert.deepEqual(req.body?.input, { loan_id: 'L-001' });
 	assert.deepEqual(req.body?.output, { status: 'approved' });
@@ -162,7 +161,7 @@ test('auditLog posts to /api/v1/audit/tool-call with tool_type=n8n_audit', async
 	// Dual-send: caller_name (current) + tool_type (deprecated fallback).
 	assert.equal(req.body?.caller_name, 'n8n_audit');
 	assert.equal(req.body?.tool_type, 'n8n_audit');
-	assert.equal(req.body?.user_id, 'utok-xyz');
+	assert.equal(req.body?.user_id, undefined, 'the credential secret is never sent as a user id');
 	assert.equal(req.body?.success, false);
 	assert.equal(req.body?.error_message, 'downstream timeout');
 });
@@ -196,7 +195,7 @@ test('waitForApproval posts to /api/v1/hitl/queue and unwraps approval_id from d
 	const req = requests[0];
 	assert.equal(req.url, 'https://axonflow.local/api/v1/hitl/queue');
 	assert.equal(req.headers?.['Idempotency-Key'], 'idem-approval-1');
-	assert.equal(req.body?.user_id, 'utok-xyz');
+	assert.equal(req.body?.user_id, undefined, 'the credential secret is never sent as a user id');
 	assert.equal(req.body?.expires_in_seconds, 3600);
 	assert.equal(req.body?.severity, 'high');
 	assert.deepEqual(req.body?.request_context, { loan_id: 'L-001' });
@@ -238,7 +237,7 @@ test('waitForApproval includes notify_url when provided', async () => {
 
 	const req = requests[0];
 	assert.equal(req.body?.notify_url, 'http://n8n:5678/webhook/approval-resume');
-	assert.equal(req.body?.user_id, 'utok-xyz');
+	assert.equal(req.body?.user_id, undefined, 'the credential secret is never sent as a user id');
 });
 
 test('waitForApproval omits notify_url when empty string (not sent as empty key)', async () => {
@@ -731,4 +730,119 @@ test('the node passes redacted_statement and redaction_evaluated through UNMODIF
 	assert.equal(out.redacted_statement, masked);
 	assert.equal(out.redaction_evaluated, true);
 	assert.equal(out.redacted, true);
+});
+
+// ---------------------------------------------------------------------------
+// The v11 plugin census (W3-Y): the credential secret is never copied into a
+// request body, and the idempotency default runs on current n8n.
+// ---------------------------------------------------------------------------
+
+const EVERY_OPERATION: Array<Record<string, unknown>> = [
+	{ operation: 'checkPolicy', connectorType: 'n8n', statement: 's', mcpOperation: 'execute', parameters: '{}' },
+	{
+		operation: 'recordDecision',
+		toolName: 't',
+		workflowId: 'wf',
+		stepId: 'st',
+		auditInput: '{}',
+		auditOutput: '{}',
+		auditSuccess: true,
+		auditErrorMessage: '',
+	},
+	{
+		operation: 'auditLog',
+		toolName: 't',
+		workflowId: 'wf',
+		stepId: 'st',
+		auditInput: '{}',
+		auditOutput: '{}',
+		auditSuccess: true,
+		auditErrorMessage: '',
+	},
+	{
+		operation: 'waitForApproval',
+		limitWaitTime: 60,
+		notifyUrl: '',
+		originalQuery: 'q',
+		requestType: 'tool',
+		requestContext: '{}',
+		triggeredPolicyId: 'p',
+		triggeredPolicyName: 'P',
+		triggerReason: 'r',
+		severity: 'high',
+	},
+];
+
+for (const params of EVERY_OPERATION) {
+	test(`${params.operation}: no request body carries the credential secret`, async () => {
+		const { requests } = await runExecute({
+			params: { ...params, idempotencyKey: 'k' },
+			responses: [
+				params.operation === 'waitForApproval'
+					? { success: true, data: { id: 'approval-uuid-1', status: 'pending', expires_at: '2026-05-23T00:00:00Z' } }
+					: { allowed: true },
+			],
+		});
+		assert.ok(requests.length >= 1);
+		for (const req of requests) {
+			assert.ok(
+				!JSON.stringify(req.body ?? {}).includes('utok-xyz'),
+				`the secret must travel only in the Authorization header: ${JSON.stringify(req.body)}`,
+			);
+		}
+	});
+}
+
+test('an EMPTY idempotency key falls back to executionId-itemIndex-nodeName', async () => {
+	const { requests } = await runExecute({
+		params: {
+			operation: 'auditLog',
+			idempotencyKey: '',
+			toolName: 'noop',
+			workflowId: 'wf-42',
+			stepId: 'step',
+			auditInput: '{}',
+			auditOutput: '{}',
+			auditSuccess: true,
+			auditErrorMessage: '',
+		},
+		executionId: 'exec-99',
+		nodeName: 'AxonFlowNode',
+	});
+	assert.equal(requests[0].headers?.['Idempotency-Key'], 'exec-99-0-AxonFlowNode');
+});
+
+test('the declared idempotency default references no other node ($node is a lookup of OTHER nodes by name)', () => {
+	const node = new AxonFlow();
+	const param = node.description.properties.find((p) => p.name === 'idempotencyKey');
+	assert.ok(param, 'idempotencyKey parameter');
+	assert.ok(
+		!String(param.default).includes('$node'),
+		`the declared default must not evaluate $node on n8n 2.x ("Referenced node doesn't exist"): ${String(param.default)}`,
+	);
+});
+
+test('the declared stepId default references no other node either', () => {
+	const node = new AxonFlow();
+	const param = node.description.properties.find((p) => p.name === 'stepId');
+	assert.ok(param, 'stepId parameter');
+	assert.ok(!String(param.default).includes('$node'), String(param.default));
+});
+
+test("an EMPTY stepId falls back to this node's name", async () => {
+	const { requests } = await runExecute({
+		params: {
+			operation: 'auditLog',
+			idempotencyKey: 'k',
+			toolName: 'noop',
+			workflowId: 'wf-42',
+			stepId: '',
+			auditInput: '{}',
+			auditOutput: '{}',
+			auditSuccess: true,
+			auditErrorMessage: '',
+		},
+		nodeName: 'AxonFlowNode',
+	});
+	assert.equal(requests[0].body?.step_id, 'AxonFlowNode');
 });

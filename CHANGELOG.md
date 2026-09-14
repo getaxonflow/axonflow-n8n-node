@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The credential now authenticates on n8n 2.x.** It built the `Authorization` header in an expression with `Buffer.from(...)`, and n8n 2.x replaces `Buffer` with an empty object inside expressions, so the header was the bare word `Basic`: on a platform that checks credentials (Community SaaS, Enterprise) every operation answered 401. The credential now uses n8n's generic Basic auth (`authenticate.properties.auth`), and n8n builds and encodes the header itself.
+- **Operations run with the default Idempotency Key on n8n 2.x.** The default was the expression `{{ $execution.id }}-{{ $itemIndex }}-{{ $node.name }}`. `$node` is n8n's lookup of another node by name, so every operation failed with "Referenced node doesn't exist" before any request was sent. The default is now empty, and an empty key means `<execution id>-<item index>-<node name>`, computed at run time. **Step ID** had the same `$node.name` default; it is now empty too, and an empty step id means this node's name.
+- **The credential secret is no longer copied into request bodies.** The "User Token" field (the client secret) was sent as `user_token` on Check Policy and on the credential test, and as `user_id` on Record Decision, Audit Log and Wait for Approval, so it reached request logs, audit records and HITL rows. It now travels only in the `Authorization` header, and those body fields are no longer sent.
+
 ## [1.2.0] - 2026-09-05
 
 ### Added

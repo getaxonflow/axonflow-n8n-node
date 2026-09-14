@@ -8,11 +8,13 @@ import {
 /**
  * AxonFlowApi credential.
  *
- * Uses the Header Auth pattern (Authorization header explicitly attached in
- * `authenticate.headers`) rather than n8n's built-in Bearer Auth class. The
- * Bearer Auth class silently drops the header in some n8n versions
- * (https://github.com/n8n-io/n8n/issues/15261), so credentials would appear
- * configured but every AxonFlow call would 401.
+ * Authenticates with n8n's generic Basic auth (`authenticate.properties.auth`),
+ * so n8n builds the Authorization header itself. It used to build the header
+ * in an expression with `Buffer.from(...)`, and n8n 2.x replaces `Buffer` with
+ * an empty object inside expressions, so the header evaluated to the bare word
+ * "Basic" and every call 401'd on a platform that checks credentials. It is
+ * still not n8n's Bearer Auth class, which silently drops the header in some
+ * n8n versions (https://github.com/n8n-io/n8n/issues/15261).
  */
 import { version as pluginVersion } from '../package.json';
 
@@ -76,12 +78,11 @@ export class AxonFlowApi implements ICredentialType {
 	];
 
 	/**
-	 * Header Auth pattern: build the Authorization header ourselves so it lands
-	 * even on n8n versions affected by the Bearer Auth class header-drop bug.
+	 * n8n's generic Basic auth: n8n builds and encodes the Authorization header
+	 * from `auth` at send time, with no expression-side encoding.
 	 *
 	 * AxonFlow's policy and audit endpoints accept HTTP Basic auth
-	 * (clientId:userToken). The injected header is base64 encoded by n8n's
-	 * httpRequest helper at send time via expressions.
+	 * (clientId:userToken).
 	 *
 	 * X-Tenant-ID is deliberately NOT set here: the AxonFlow agent's auth
 	 * middleware injects the canonical tenant from the authenticated client
@@ -92,9 +93,12 @@ export class AxonFlowApi implements ICredentialType {
 	authenticate: IAuthenticateGeneric = {
 		type: 'generic',
 		properties: {
+			// n8n encodes these as HTTP Basic: clientId:userToken.
+			auth: {
+				username: '={{ $credentials.clientId }}',
+				password: '={{ $credentials.userToken }}',
+			},
 			headers: {
-				Authorization:
-					'=Basic {{ Buffer.from($credentials.clientId + ":" + $credentials.userToken).toString("base64") }}',
 				// ADR-050 §4 client identification, on every governed call.
 				//
 				// This is the ONE site: every operation in the node goes through
@@ -145,7 +149,7 @@ export class AxonFlowApi implements ICredentialType {
 			method: 'POST',
 			body: {
 				client_id: '={{ $credentials.clientId }}',
-				user_token: '={{ $credentials.userToken }}',
+				// No user_token: the secret travels only in the Authorization header.
 				tenant_id: '={{ $credentials.clientId }}',
 				connector_type: 'credential_test',
 				statement: 'n8n_credential_test_noop',

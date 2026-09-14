@@ -21,12 +21,13 @@ import { PEP_HANDSHAKE_HEADER, buildPepHandshake } from './pep-handshake';
  *   - waitForApproval    → POST /api/v1/hitl/queue, then pause until webhook resume
  *
  * Every operation sends an Idempotency-Key header by default so n8n's
- * `Retry on Fail` re-runs don't double-record. The header value is
- * `{{ $execution.id }}-{{ $itemIndex }}-{{ $nodeName }}` and is overridable.
+ * `Retry on Fail` re-runs don't double-record. Left empty, the key is
+ * `<execution id>-<item index>-<node name>`, computed at run time, and it is
+ * overridable. It is not a declared expression default: `$node` is n8n's
+ * lookup of ANOTHER node by name, so `{{ $node.name }}` asks for a node
+ * called "name", and n8n 2.x fails every operation with "Referenced node
+ * doesn't exist" before any request is sent.
  */
-
-const DEFAULT_IDEMPOTENCY_TEMPLATE =
-	'={{ $execution.id }}-{{ $itemIndex }}-{{ $node.name }}';
 
 export class AxonFlow implements INodeType {
 	description: INodeTypeDescription = {
@@ -88,9 +89,9 @@ export class AxonFlow implements INodeType {
 				displayName: 'Idempotency Key',
 				name: 'idempotencyKey',
 				type: 'string',
-				default: DEFAULT_IDEMPOTENCY_TEMPLATE,
+				default: '',
 				description:
-					'Sent as the Idempotency-Key header. The default is unique per execution-item-node, so n8n retries do not double-record. Override only if you need a domain-specific key.',
+					'Sent as the Idempotency-Key header. Leave empty for the default: the execution ID, the item index and this node\'s name, joined by dashes, which is unique per execution-item-node so n8n retries do not double-record. Override only if you need a domain-specific key.',
 			},
 			{
 				displayName: 'Failure Mode',
@@ -178,10 +179,13 @@ export class AxonFlow implements INodeType {
 				displayName: 'Step ID',
 				name: 'stepId',
 				type: 'string',
-				default: '={{ $node.name }}',
+				// Empty, not '={{ $node.name }}': see the Idempotency Key note above.
+				// Left empty, the step id is this node's name, set at run time.
+				default: '',
 				displayOptions: {
 					show: { operation: ['recordDecision', 'auditLog'] },
 				},
+				description: "Leave empty to use this node's name",
 			},
 			{
 				displayName: 'Input (JSON)',
@@ -322,11 +326,12 @@ export class AxonFlow implements INodeType {
 
 		for (let i = 0; i < items.length; i++) {
 			const operation = this.getNodeParameter('operation', i) as string;
-			const idempotencyKey = this.getNodeParameter(
-				'idempotencyKey',
-				i,
-				`${this.getExecutionId()}-${i}-${this.getNode().name}`,
-			) as string;
+			// The fallback applies to an EMPTY value too: the declared default is ''
+			// (see the Idempotency Key note), and getNodeParameter's own fallback
+			// covers only an undefined parameter.
+			const idempotencyKey =
+				(this.getNodeParameter('idempotencyKey', i, '') as string) ||
+				`${this.getExecutionId()}-${i}-${this.getNode().name}`;
 			const failureMode = this.getNodeParameter('failureMode', i, 'open') as
 				| 'open'
 				| 'closed';
@@ -347,7 +352,8 @@ export class AxonFlow implements INodeType {
 								pepHandshake,
 								body: {
 									client_id: clientId,
-									user_token: String(credentials.userToken || ''),
+									// No user_token: the credential's "User Token" is the client
+									// secret, and it travels only in the Authorization header.
 									tenant_id: clientId,
 									connector_type: this.getNodeParameter('connectorType', i) as string,
 									statement: this.getNodeParameter('statement', i) as string,
@@ -379,9 +385,12 @@ export class AxonFlow implements INodeType {
 									// caller_name support (v9.11.0+) and unchanged on older ones.
 									caller_name: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
 									tool_type: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
-									user_id: String(credentials.userToken || ''),
+									// No user_id: the credential secret is never a user id, and
+									// n8n has no end-user identity to put there.
 									workflow_id: this.getNodeParameter('workflowId', i) as string,
-									step_id: this.getNodeParameter('stepId', i) as string,
+									step_id:
+										(this.getNodeParameter('stepId', i, '') as string) ||
+										this.getNode().name,
 									input: parseJsonParam(
 										this.getNodeParameter('auditInput', i, '{}') as string | object,
 									),
@@ -400,7 +409,7 @@ export class AxonFlow implements INodeType {
 						const notifyUrl = this.getNodeParameter('notifyUrl', i, '') as string;
 						const hitlBody: IDataObject = {
 							client_id: clientId,
-							user_id: String(credentials.userToken || ''),
+							// No user_id: the credential secret is never a user id.
 							original_query: this.getNodeParameter('originalQuery', i) as string,
 							request_type: this.getNodeParameter('requestType', i) as string,
 							request_context: parseJsonParam(
