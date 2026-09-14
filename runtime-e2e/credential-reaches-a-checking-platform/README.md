@@ -15,7 +15,7 @@ The third property this fix carries, that the credential secret travels only in 
 
 - `N8N_BIN` (required): an n8n 2.x CLI. `N8N_NODE_BIN`: a Node.js bin directory for it.
 - `AXONFLOW_E2E_CLIENT_ID` and `AXONFLOW_E2E_CLIENT_SECRET`: a credential on the platform; without them the leg registers a Community SaaS tenant.
-- `NODE_PACKAGE`: a tarball of this package; without it the leg builds and packs this checkout. `N8N_USER_FOLDER`: an n8n user folder that already has the node installed.
+- `NODE_PACKAGE`: a tarball of this package; without it the leg builds and packs this checkout. `N8N_USER_FOLDER`: an n8n user folder that already has the node installed under `.n8n/nodes/node_modules`, where a Community Nodes install puts it (a node under `.n8n/custom` registers as `CUSTOM.axonFlow` and the leg's workflow cannot find it).
 - `E2E_EVIDENCE_DIR` keeps every execution's output.
 
 n8n's import reads a file, so the secret is written with mode 0600 for the import and removed straight after; n8n stores it encrypted.

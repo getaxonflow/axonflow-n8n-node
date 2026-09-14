@@ -81,18 +81,21 @@ if [ "$PROBE" != "401" ]; then
 fi
 echo "The platform refuses a wrong secret (HTTP 401)"
 
-# An isolated n8n user folder with this node installed.
+# An isolated n8n user folder with this node installed where a Community Nodes
+# install puts it: .n8n/nodes/node_modules, which n8n scans by package name, so
+# the node's type is @axonflow/n8n-nodes-axonflow.axonFlow. (.n8n/custom would
+# register it as CUSTOM.axonFlow and this workflow would not find it.)
 if [ -n "$N8N_USER_FOLDER_IN" ]; then
   USER_FOLDER="$N8N_USER_FOLDER_IN"
 else
   USER_FOLDER="$EVIDENCE/n8n-home"
-  mkdir -p "$USER_FOLDER/.n8n/custom" || exit 1
+  mkdir -p "$USER_FOLDER/.n8n/nodes" || exit 1
   if [ -z "$NODE_PACKAGE" ]; then
     (cd "$PLUGIN_DIR" && npm run build >"$EVIDENCE/build.log" 2>&1 && npm pack --pack-destination "$EVIDENCE" >"$EVIDENCE/pack.log" 2>&1) \
       || { echo "FAIL: could not build and pack this checkout (see $EVIDENCE)"; exit 1; }
     NODE_PACKAGE=$(ls "$EVIDENCE"/*.tgz | head -1)
   fi
-  (cd "$USER_FOLDER/.n8n/custom" && npm init -y >/dev/null && npm install --no-audit --no-fund --omit=peer "$NODE_PACKAGE" >"$EVIDENCE/install.log" 2>&1) \
+  (cd "$USER_FOLDER/.n8n/nodes" && npm init -y >/dev/null && npm install --no-audit --no-fund --omit=peer "$NODE_PACKAGE" >"$EVIDENCE/install.log" 2>&1) \
     || { echo "FAIL: could not install $NODE_PACKAGE into n8n (see $EVIDENCE/install.log)"; exit 1; }
 fi
 echo "n8n user folder: $USER_FOLDER"
@@ -140,8 +143,8 @@ run_workflow explicit-key '{"idempotencyKey": "n8n-leg-explicit-key"}'
 
 both() { cat "$EVIDENCE/execute-$1.out" "$EVIDENCE/execute-$1.err" 2>/dev/null; }
 echo ""
-echo "OBSERVED: no Idempotency Key set: exit $(cat "$EVIDENCE/execute-default-key.rc"): $(both default-key | grep -m1 -oE 'ExpressionError[^"]{0,120}|Referenced node[^"]{0,80}|"allowed": ?(true|false)|Authorization failed[^"]{0,80}|Forbidden[^"]{0,60}' || echo '(no marker)')"
-echo "OBSERVED: an explicit Idempotency Key: exit $(cat "$EVIDENCE/execute-explicit-key.rc"): $(both explicit-key | grep -m1 -oE '"allowed": ?(true|false)|Authorization failed[^"]{0,80}|401[^"]{0,60}|Forbidden[^"]{0,60}' || echo '(no marker)')"
+echo "OBSERVED: no Idempotency Key set: exit $(cat "$EVIDENCE/execute-default-key.rc"): $(both default-key | grep -m1 -oE 'Unrecognized node type[^"]{0,80}|ExpressionError[^"]{0,120}|Referenced node[^"]{0,80}|"allowed": ?(true|false)|Authorization failed[^"]{0,80}|Forbidden[^"]{0,60}' || echo '(no marker)')"
+echo "OBSERVED: an explicit Idempotency Key: exit $(cat "$EVIDENCE/execute-explicit-key.rc"): $(both explicit-key | grep -m1 -oE 'Unrecognized node type[^"]{0,80}|"allowed": ?(true|false)|Authorization failed[^"]{0,80}|401[^"]{0,60}|Forbidden[^"]{0,60}' || echo '(no marker)')"
 
 if [ "$(cat "$EVIDENCE/execute-default-key.rc")" = 0 ] && ! both default-key | grep -q "Referenced node doesn't exist"; then
   pass "a workflow with no Idempotency Key set executes"
