@@ -4,20 +4,24 @@ import assert from 'node:assert/strict';
 import { AxonFlowApi, AXONFLOW_CLIENT_VALUE } from '../credentials/AxonFlowApi.credentials';
 import pkg from '../package.json';
 
-test('credential uses Header Auth pattern (Authorization in authenticate.headers), NOT Bearer Auth class', () => {
+test('credential authenticates with n8n generic Basic auth, never a Buffer expression (n8n 2.x blanks Buffer in expressions)', () => {
 	const cred = new AxonFlowApi();
 	assert.equal(cred.authenticate.type, 'generic');
-	const headers = (cred.authenticate.properties as { headers: Record<string, string> })
-		.headers;
-	assert.ok(headers, 'authenticate.properties.headers must be set');
-	assert.match(
-		headers.Authorization,
-		/=Basic /,
-		'Authorization header must be an n8n expression that constructs a Basic auth header inline (Header Auth pattern). Using n8n built-in Bearer Auth class is forbidden per n8n issue #15261.',
+	const props = cred.authenticate.properties as {
+		auth?: { username?: string; password?: string };
+		headers?: Record<string, string>;
+	};
+	assert.ok(props.auth, 'authenticate.properties.auth must carry the Basic credentials');
+	assert.match(String(props.auth.username), /\$credentials\.clientId/);
+	assert.match(String(props.auth.password), /\$credentials\.userToken/);
+	assert.equal(props.headers?.Authorization, undefined, 'n8n builds the Basic header itself');
+	assert.ok(
+		!JSON.stringify(cred.authenticate).includes('Buffer'),
+		'n8n 2.x replaces Buffer with an empty object inside expressions, so a Buffer-built header evaluates to the bare word Basic',
 	);
-	// X-Tenant-ID is deliberately not set in the credential — the agent's
+	// X-Tenant-ID is deliberately not set in the credential: the agent's
 	// auth middleware injects the canonical tenant after Basic validation.
-	assert.equal(headers['X-Tenant-ID'], undefined);
+	assert.equal(props.headers?.['X-Tenant-ID'], undefined);
 });
 
 test('credential test targets an authenticated endpoint that exists on BOTH community and enterprise tiers (regression for hitl/queue 404 in community)', () => {
@@ -42,7 +46,8 @@ test('credential test body wires the credential fields as expression references 
 	const cred = new AxonFlowApi();
 	const body = (cred.test.request.body ?? {}) as Record<string, string>;
 	assert.match(body.client_id, /\$credentials\.clientId/);
-	assert.match(body.user_token, /\$credentials\.userToken/);
+	assert.equal(body.user_token, undefined, 'the credential secret is never copied into the test request body');
+	assert.ok(!JSON.stringify(body).includes('userToken'));
 	// connector_type identifies these audit rows so teams can filter them
 	// out of dashboards / detection rules.
 	assert.equal(body.connector_type, 'credential_test');
@@ -73,15 +78,19 @@ test('credential has endpoint + clientId + userToken properties, userToken is pa
 
 test('every governed call carries X-Axonflow-Client from the credential', () => {
 	const cred = new AxonFlowApi();
-	const headers = (cred.authenticate.properties as { headers: Record<string, string> }).headers;
+	const props = cred.authenticate.properties as {
+		headers: Record<string, string>;
+		auth?: { username?: string; password?: string };
+	};
 	assert.equal(
-		headers['X-Axonflow-Client'],
+		props.headers['X-Axonflow-Client'],
 		AXONFLOW_CLIENT_VALUE,
 		'the credential is the ONE seam every operation authenticates through; a header set anywhere else would be per-call-site and forgettable',
 	);
-	// ...and it must not have displaced the header the platform actually
-	// authenticates on.
-	assert.match(headers.Authorization, /=Basic /);
+	// ...and it must not have displaced the Basic credentials the platform
+	// actually authenticates on (n8n builds that header from `auth`).
+	assert.match(String(props.auth?.username), /\$credentials\.clientId/);
+	assert.match(String(props.auth?.password), /\$credentials\.userToken/);
 });
 
 test('the client id is exactly the string the server vocabulary knows', () => {

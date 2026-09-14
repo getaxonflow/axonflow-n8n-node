@@ -2,8 +2,8 @@
 # Test: record-decision-writes-audit-row
 #
 # Verifies that the Record Decision operation sends the correct body to
-# /api/v1/audit/tool-call including user_id, and that the audit row
-# is persisted in the database.
+# /api/v1/audit/tool-call, never the credential secret as its user_id, and
+# that the audit row is persisted in the database.
 #
 # Flow: setup owner -> install node -> create credential -> import workflow
 #       -> activate -> trigger via webhook -> wait -> assert status + DB.
@@ -122,8 +122,10 @@ echo "Verifying DB state for Record Decision..."
 # ASSERT 2: Audit Log variant row exists
 echo "Verifying DB state for Audit Log variant..."
 
-# ASSERT 3: user_id was recorded correctly for Record Decision
+# ASSERT 3: the credential secret is never stored as the audit row's user_id
 echo "Verifying user_id attribution..."
+STORED_USER_ID=$(psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow -tAc "SELECT COALESCE(user_id, '') FROM audit_logs WHERE tool_name = '$TOOL_NAME' LIMIT 1" 2>/dev/null || echo "")
+[ "$STORED_USER_ID" != "e2e-user-token" ] || { echo "FAIL: the credential secret was stored as the audit row's user_id"; exit 1; }
 
 # CLEANUP: remove test rows and workflows
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
