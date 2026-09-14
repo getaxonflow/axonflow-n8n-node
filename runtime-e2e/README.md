@@ -40,11 +40,12 @@ Use `--no-down` to leave the stack running for debugging:
 |-------|--------------|
 | `n8n-can-install-the-node` | Package installs into n8n and node type is registered |
 | `check-policy-operation-hits-axonflow` | Check Policy workflow executes through n8n, writes `mcp_query_audits` row |
-| `record-decision-writes-audit-row` | Record Decision + Audit Log workflows write audit rows with `user_id` |
+| `record-decision-writes-audit-row` | Record Decision + Audit Log workflows write audit rows (the credential secret is never sent as their `user_id`) |
 | `wait-for-approval-pauses-workflow` | Wait for Approval workflow calls HITL endpoint through n8n |
 | `idempotency-retry-does-not-double-record` | Same workflow executed twice with fixed idempotency key creates only 1 row |
 | `failure-mode-open-vs-closed` | Fail-open continues with fallback, fail-closed errors on agent down |
 | `credential-test-401s-on-bad-auth` | Good/bad/unreachable credentials behave correctly through n8n |
+| `credential-reaches-a-checking-platform` | The real n8n 2.x CLI authenticates against a platform that checks credentials, and a workflow with no Idempotency Key executes (runs outside `run-all.sh`: it needs `N8N_BIN` and a credential-checking platform) |
 
 ## Architecture
 
