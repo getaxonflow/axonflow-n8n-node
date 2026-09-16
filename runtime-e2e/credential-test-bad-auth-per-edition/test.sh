@@ -49,8 +49,9 @@ FAILS=0
 fail() { echo "FAIL: $*"; FAILS=$((FAILS + 1)); }
 
 # run_with_credential <label> <endpoint> <client id> <secret>: import the
-# workflow with a new credential, trigger it, and leave EXEC_ID and STATUS set.
-# The workflow is deleted afterwards, since every run shares one webhook path.
+# workflow with a new credential, trigger it, and leave STATUS, ITEM and
+# ERROR_MSG set. They are read BEFORE the workflow is deleted (every run shares
+# one webhook path): deleting a workflow deletes its executions.
 run_with_credential() {
   local label="$1" endpoint="$2" client_id="$3" secret="$4" cred_id wf_id active
   cred_id=$(n8n_create_credential "AxonFlow $label" "$endpoint" "$client_id" "$secret")
@@ -71,20 +72,18 @@ run_with_credential() {
   n8n_wait_execution "$EXEC_ID" 30
   STATUS=$(n8n_execution_status "$EXEC_ID")
   n8n_get_execution "$EXEC_ID" > "$WORK/credential-leg-$label.json"
+  ITEM=$(n8n_node_item "$EXEC_ID" "$NODE_NAME")
+  ERROR_MSG=$(n8n_node_error "$EXEC_ID" "$NODE_NAME")
   echo "$label: execution $EXEC_ID status $STATUS"
-  curl -s -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$wf_id/deactivate" \
-    -H "Content-Type: application/json" -d '{}' > /dev/null 2>&1 || true
-  sleep 1
   n8n_delete_workflow "$wf_id"
   sleep 2
 }
 
 assert_decision_item() {
-  local label="$1" item
-  item=$(n8n_node_item "$EXEC_ID" "$NODE_NAME")
-  echo "$label item: ${item:-(none)}"
+  local label="$1"
+  echo "$label item: ${ITEM:-(none)}"
   [ "$STATUS" = "success" ] || fail "$label: the execution should succeed, got $STATUS"
-  [ "$(jq -r '.allowed | type' <<<"${item:-{\}}" 2>/dev/null)" = "boolean" ] \
+  [ "$(jq -r '.allowed | type' <<<"${ITEM:-{\}}" 2>/dev/null)" = "boolean" ] \
     || fail "$label: the item is not a decision (no boolean allowed)"
 }
 
@@ -97,7 +96,6 @@ run_with_credential wrong "http://axonflow-agent:8080" "bad-client" "wrong-token
 if [ "$EDITION" = "community" ]; then
   assert_decision_item "wrong (community admits any credential)"
 else
-  ERROR_MSG=$(n8n_node_error "$EXEC_ID" "$NODE_NAME")
   echo "wrong error: ${ERROR_MSG:-(none)}"
   [ "$STATUS" = "error" ] || fail "wrong: on Enterprise the execution should end in error, got $STATUS"
   case "$ERROR_MSG" in
@@ -108,7 +106,6 @@ fi
 
 # --- 3. An endpoint that does not resolve (Failure Mode Open) ------------------
 run_with_credential unreachable "http://no-such-host:9999" "e2e-n8n-test" "e2e-user-token"
-ITEM=$(n8n_node_item "$EXEC_ID" "$NODE_NAME")
 echo "unreachable item: ${ITEM:-(none)}"
 [ -n "$ITEM" ] || ITEM='{}'
 [ "$STATUS" = "success" ] || fail "unreachable: Failure Mode Open should let the execution succeed, got $STATUS"

@@ -238,9 +238,21 @@ n8n_wait_execution() {
 # Delete a workflow.
 # Args: <workflow_id>
 n8n_delete_workflow() {
-  local workflow_id="$1"
-  curl -sf -b "$_N8N_COOKIE_JAR" -X DELETE "$N8N_URL/rest/workflows/$workflow_id" \
-    > /dev/null 2>&1 || true
+  # n8n 2.x deletes only an archived workflow, and archives only an inactive
+  # one; a bare DELETE answers 400 and left every leg's workflow active, so a
+  # second run on the same stack collided on its webhook path. Deactivate,
+  # archive, delete, and fail if the workflow is still there.
+  local workflow_id="$1" code
+  curl -s -o /dev/null -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$workflow_id/deactivate" \
+    -H "Content-Type: application/json" -d '{}' 2>/dev/null || true
+  curl -s -o /dev/null -b "$_N8N_COOKIE_JAR" -X POST "$N8N_URL/rest/workflows/$workflow_id/archive" \
+    -H "Content-Type: application/json" -d '{}' 2>/dev/null || true
+  curl -s -o /dev/null -b "$_N8N_COOKIE_JAR" -X DELETE "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null || true
+  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$_N8N_COOKIE_JAR" "$N8N_URL/rest/workflows/$workflow_id" 2>/dev/null || echo 000)
+  if [ "$code" != "404" ]; then
+    echo "  FAIL: workflow $workflow_id was not deleted (GET answered $code)" >&2
+    return 1
+  fi
 }
 
 # Activate a workflow and trigger it via webhook.
