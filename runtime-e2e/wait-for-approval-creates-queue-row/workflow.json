@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "path": "e2e-wait-for-approval-pauses-workflow-workflow",
+        "path": "e2e-wait-for-approval-creates-queue-row-workflow",
         "httpMethod": "POST",
         "responseMode": "onReceived"
       },

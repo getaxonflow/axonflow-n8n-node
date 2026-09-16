@@ -25,6 +25,10 @@ export WORK="${WORK:-/tmp}"
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-runtime-e2e}"
+# The agent is stopped and started by compose service name within this project,
+# never by container name, so a sibling stack's agent is never touched.
+agent_compose() { docker compose -p "$COMPOSE_PROJECT_NAME" -f "$SCRIPT_DIR/../docker-compose.yml" "$@"; }
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner
@@ -110,7 +114,7 @@ echo "OK: fail-closed workflow succeeded with agent UP"
 
 echo ""
 echo "--- Phase 2: Stopping axonflow-agent container ---"
-docker stop e2e-agent
+agent_compose stop axonflow-agent
 
 # Wait for port to be truly unreachable
 for i in $(seq 1 15); do
@@ -137,26 +141,34 @@ if [ "$STATUS_OPEN2" != "success" ]; then
   echo "FAIL: fail-open workflow should succeed even when agent is DOWN (got $STATUS_OPEN2)"
   echo "Fail-open means the workflow continues with a fallback payload."
   n8n_get_execution "$EXEC_OPEN2" | jq '.' 2>/dev/null || true
-  docker start e2e-agent
+  agent_compose start axonflow-agent
   exit 1
 fi
 echo "OK: fail-open workflow succeeded with agent DOWN"
 
-# Verify the output contains the _axonflow_unreachable marker
-OPEN2_RESULT=$(n8n_get_execution "$EXEC_OPEN2")
-UNREACHABLE=$(echo "$OPEN2_RESULT" | jq -r '
-  .data.resultData.runData["AxonFlow Fail Open"]
-  // [] | .[0].data.main
-  // [[]] | .[0]
-  // [] | .[0].json._axonflow_unreachable
-  // false
-')
-
-if [ "$UNREACHABLE" = "true" ]; then
-  echo "OK: output contains _axonflow_unreachable=true --- correct fail-open fallback"
-else
-  echo "OK: fail-open workflow succeeded (fallback payload shape may vary)"
+# The fallback item, field by field. A success without it is not fail-open:
+# it is a workflow that ran with no decision and said nothing. And the item
+# must carry NO `allowed` key: workflows branch on {{ $json.allowed }}, and an
+# `allowed: true` here would send every saved workflow down its TRUE branch
+# during an outage.
+n8n_get_execution "$EXEC_OPEN2" > "$WORK/failure-mode-open-agent-down.json"
+OPEN2_ITEM=$(n8n_node_item "$EXEC_OPEN2" "AxonFlow Fail Open")
+[ -n "$OPEN2_ITEM" ] || OPEN2_ITEM='{}'
+echo "Fail-open item (agent DOWN): $OPEN2_ITEM"
+ITEM_FAILS=0
+[ "$(printf '%s' "$OPEN2_ITEM" | jq -r '._axonflow_unreachable // "absent"')" = "true" ] \
+  || { echo "FAIL: the fail-open item has no _axonflow_unreachable: true"; ITEM_FAILS=1; }
+[ "$(printf '%s' "$OPEN2_ITEM" | jq -r '.governance // "absent"')" = "unavailable" ] \
+  || { echo "FAIL: the fail-open item has no governance: \"unavailable\""; ITEM_FAILS=1; }
+[ "$(printf '%s' "$OPEN2_ITEM" | jq -r '.cause // "absent"')" = "no_response" ] \
+  || { echo "FAIL: the fail-open item's cause is not no_response (the agent is stopped)"; ITEM_FAILS=1; }
+[ "$(printf '%s' "$OPEN2_ITEM" | jq -r 'has("allowed")')" = "false" ] \
+  || { echo "FAIL: the fail-open item carries an allowed key; a saved IF on \$json.allowed would change branch"; ITEM_FAILS=1; }
+if [ "$ITEM_FAILS" -ne 0 ]; then
+  agent_compose start axonflow-agent
+  exit 1
 fi
+echo "OK: fail-open item carries _axonflow_unreachable, governance=unavailable, cause=no_response, and no allowed key"
 
 # --- Phase 3: Fail-closed workflow with agent DOWN ---
 
@@ -175,7 +187,7 @@ echo "Fail-closed status (agent DOWN): $STATUS_CLOSED2"
 if [ "$STATUS_CLOSED2" = "success" ]; then
   echo "FAIL: fail-closed workflow should NOT succeed when agent is DOWN"
   n8n_get_execution "$EXEC_CLOSED2" | jq '.' 2>/dev/null || true
-  docker start e2e-agent
+  agent_compose start axonflow-agent
   exit 1
 fi
 echo "OK: fail-closed workflow errored with agent DOWN (status=$STATUS_CLOSED2)"
@@ -184,7 +196,7 @@ echo "OK: fail-closed workflow errored with agent DOWN (status=$STATUS_CLOSED2)"
 
 echo ""
 echo "Restarting axonflow-agent container..."
-docker start e2e-agent
+agent_compose start axonflow-agent
 
 echo "Waiting for agent to be healthy..."
 for i in $(seq 1 60); do

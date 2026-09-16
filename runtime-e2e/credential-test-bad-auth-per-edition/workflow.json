@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "path": "e2e-credential-test-401s-on-bad-auth-workflow",
+        "path": "e2e-credential-test-bad-auth-per-edition-workflow",
         "httpMethod": "POST",
         "responseMode": "onReceived"
       },

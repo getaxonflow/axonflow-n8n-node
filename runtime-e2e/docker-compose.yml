@@ -1,6 +1,10 @@
 # Runtime E2E harness for @axonflow/n8n-nodes-axonflow
 #
-# Brings up: Postgres + Redis + AxonFlow Agent (community) + n8n
+# Brings up: Postgres + Redis + AxonFlow Agent and Orchestrator (community) + n8n
+#
+# The orchestrator is not optional: on AxonFlow v11 the agent proxies
+# /api/v1/audit/tool-call (Record Decision, Audit Log) to it, and without it
+# that route answers 502.
 #
 # Usage:
 #   cd runtime-e2e
@@ -8,17 +12,22 @@
 #   ./_lib/install-node-into-n8n.sh
 #   ./run-all.sh
 #   docker compose down -v
+#
+# No service has a container_name: the compose project is the identity, so two
+# stacks (two projects) can run on one machine. Host ports and the agent image
+# are variables whose defaults are the values CI uses; see README.md
+# "Running beside another stack".
+# Ports bind to 127.0.0.1 only: the database password below is public.
 
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: e2e-postgres
     environment:
       POSTGRES_USER: axonflow
       POSTGRES_PASSWORD: localdev123
       POSTGRES_DB: axonflow
     ports:
-      - "15432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U axonflow -d axonflow"]
       interval: 5s
@@ -30,9 +39,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: e2e-redis
     ports:
-      - "16379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-16379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -42,8 +50,7 @@ services:
       - e2e-network
 
   axonflow-agent:
-    image: ghcr.io/getaxonflow/axonflow-agent:latest
-    container_name: e2e-agent
+    image: ${AXONFLOW_AGENT_IMAGE:-ghcr.io/getaxonflow/axonflow-agent:latest}
     environment:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
@@ -62,10 +69,12 @@ services:
       DEPLOYMENT_MODE: community
       AXONFLOW_VERSION: "8.1.0"
       REDIS_URL: redis://redis:6379
+      ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
+      AXONFLOW_INTERNAL_SERVICE_SECRET: e2e-internal-service-secret
       AXONFLOW_TELEMETRY: "off"
       CI: "true"
     ports:
-      - "18080:8080"
+      - "127.0.0.1:${AGENT_HOST_PORT:-18080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,9 +89,43 @@ services:
     networks:
       - e2e-network
 
+  axonflow-orchestrator:
+    image: ${AXONFLOW_ORCHESTRATOR_IMAGE:-ghcr.io/getaxonflow/axonflow-orchestrator:latest}
+    environment:
+      PORT: 8081
+      DEPLOYMENT_MODE: community
+      DEPLOYMENT_KIND: dev
+      ENVIRONMENT: development
+      LOG_LEVEL: debug
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: axonflow
+      DATABASE_USER: axonflow
+      DATABASE_PASSWORD: localdev123
+      DATABASE_SSLMODE: disable
+      AXONFLOW_DB_USE_APP_ROLE: "false"
+      AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
+      AXONFLOW_INTERNAL_SERVICE_SECRET: e2e-internal-service-secret
+      ORG_ID: ${ORG_ID:-e2e-n8n-test}
+      AXONFLOW_TELEMETRY: "off"
+      CI: "true"
+    ports:
+      - "127.0.0.1:${ORCHESTRATOR_HOST_PORT:-18081}:8081"
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - e2e-network
+
   n8n:
-    image: n8nio/n8n:latest
-    container_name: e2e-n8n
+    # Pinned: the n8n release axonflow-n8n-node#9 was measured on. See README.md.
+    image: n8nio/n8n:2.38.7
     environment:
       N8N_PORT: "5678"
       N8N_PROTOCOL: http
@@ -98,11 +141,13 @@ services:
       N8N_BASIC_AUTH_ACTIVE: "false"
       N8N_USER_MANAGEMENT_DISABLED: "false"
     ports:
-      - "15678:5678"
+      - "127.0.0.1:${N8N_HOST_PORT:-15678}:5678"
     volumes:
       - n8n-data:/home/node/.n8n
     depends_on:
       axonflow-agent:
+        condition: service_healthy
+      axonflow-orchestrator:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:5678/healthz || exit 1"]

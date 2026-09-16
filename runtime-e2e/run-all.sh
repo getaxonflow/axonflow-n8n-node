@@ -18,13 +18,19 @@ cd "$SCRIPT_DIR"
 LIB_DIR="$SCRIPT_DIR/_lib"
 
 # --- Configuration ---
-AGENT_URL="http://localhost:18080"
-N8N_URL="http://localhost:15678"
-DB_HOST="localhost"
-DB_PORT="15432"
-DB_NAME="axonflow"
-DB_USER="axonflow"
-DB_PASSWORD="localdev123"
+# Every value is read from the environment, defaulting to the harness ports in
+# docker-compose.yml. On a machine that runs another stack, export all seven
+# (and COMPOSE_PROJECT_NAME) together: a DB_PORT left at its default makes the
+# database-asserting legs read whichever postgres holds 15432.
+AGENT_URL="${AGENT_URL:-http://localhost:18080}"
+N8N_URL="${N8N_URL:-http://localhost:15678}"
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-15432}"
+DB_NAME="${DB_NAME:-axonflow}"
+DB_USER="${DB_USER:-axonflow}"
+DB_PASSWORD="${DB_PASSWORD:-localdev123}"
+# The stack's identity: compose's own default for this directory.
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-runtime-e2e}"
 
 TEAR_DOWN=true
 SKIP_UP=false
@@ -37,7 +43,7 @@ for arg in "$@"; do
   esac
 done
 
-export AGENT_URL N8N_URL DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD
+export AGENT_URL N8N_URL DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD COMPOSE_PROJECT_NAME
 export PGPASSWORD="$DB_PASSWORD"
 
 WORK="/tmp/n8n-node-e2e-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -78,7 +84,7 @@ wait_for_health() {
 # --- Stack lifecycle ---
 stack_up() {
   log "=== Starting E2E stack ==="
-  docker compose -f docker-compose.yml up -d 2>&1 | tee "$WORK/stack-up.log"
+  docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d 2>&1 | tee "$WORK/stack-up.log"
 
   wait_for_health "$AGENT_URL/health" "axonflow-agent" 90
   wait_for_health "$N8N_URL/healthz" "n8n" 90
@@ -96,7 +102,7 @@ stack_up() {
 stack_down() {
   if [ "$TEAR_DOWN" = "true" ]; then
     log "=== Tearing down E2E stack ==="
-    docker compose -f docker-compose.yml down -v 2>&1 | tee "$WORK/stack-down.log"
+    docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml down -v 2>&1 | tee "$WORK/stack-down.log"
   else
     log "=== Leaving stack up (--no-down) ==="
   fi
@@ -140,6 +146,7 @@ main() {
   log "n8n Community Node — Runtime E2E Harness"
   log "============================================"
   log "Workspace: $WORK"
+  log "Compose project: $COMPOSE_PROJECT_NAME; agent $AGENT_URL; n8n $N8N_URL; postgres $DB_HOST:$DB_PORT/$DB_NAME"
   log ""
 
   if [ "$SKIP_UP" = "false" ]; then
@@ -153,7 +160,7 @@ main() {
     n8n_install_axonflow_node
     # Restart n8n after installing community node so webhook handlers load
     log "Restarting n8n to load installed node..."
-    docker restart e2e-n8n > /dev/null 2>&1 || true
+    docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml restart n8n > /dev/null 2>&1 || true
     for i in $(seq 1 60); do
       if curl -sf -o /dev/null --max-time 2 "$N8N_URL/healthz" 2>/dev/null; then
         log "n8n restarted (${i}s)"
@@ -169,11 +176,12 @@ main() {
 
   run_probe "n8n-can-install-the-node"
   run_probe "check-policy-operation-hits-axonflow"
+  run_probe "check-policy-deny-is-a-branchable-item"
   run_probe "record-decision-writes-audit-row"
-  run_probe "wait-for-approval-pauses-workflow"
+  run_probe "wait-for-approval-creates-queue-row"
   run_probe "idempotency-retry-does-not-double-record"
   run_probe "failure-mode-open-vs-closed"
-  run_probe "credential-test-401s-on-bad-auth"
+  run_probe "credential-test-bad-auth-per-edition"
 
   # --- Summary ---
   log ""

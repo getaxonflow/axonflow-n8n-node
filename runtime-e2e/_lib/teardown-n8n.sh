@@ -10,6 +10,6 @@ log() { echo "$(date -u +%H:%M:%S) [teardown] $*"; }
 
 log "Tearing down docker compose stack..."
 cd "$E2E_DIR"
-docker compose down -v 2>&1
+docker compose -p "${COMPOSE_PROJECT_NAME:-runtime-e2e}" -f "$E2E_DIR/docker-compose.yml" down -v 2>&1
 
 log "Stack torn down"

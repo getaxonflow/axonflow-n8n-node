@@ -26,7 +26,8 @@
         "auditOutput": "{\"status\": \"approved\"}",
         "auditSuccess": true,
         "auditErrorMessage": "",
-        "idempotencyKey": "e2e-test-fixed-key"
+        "idempotencyKey": "e2e-test-fixed-key",
+        "failureMode": "closed"
       },
       "id": "2",
       "name": "AxonFlow Record Decision",
