@@ -2,19 +2,33 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { AxonFlow } from '../nodes/AxonFlow/AxonFlow.node';
+import {
+	CHECK_INPUT_ALLOW,
+	CHECK_INPUT_DENY,
+	HITL_CREATED,
+	HITL_QUEUE_404,
+	MIDDLEWARE_401,
+	PER_MINUTE_429,
+	WireResponse,
+	n8nHelperAnswer,
+	noResponse,
+	wire,
+} from './wire-fixtures';
 
 interface CapturedRequest {
 	method?: string;
 	url?: string;
 	headers?: Record<string, string>;
 	body?: Record<string, unknown>;
+	returnFullResponse?: boolean;
+	ignoreHttpStatusErrors?: unknown;
 }
 
 interface ExecuteFixture {
 	params: Record<string, unknown>;
 	credentials?: Record<string, unknown>;
 	items?: Array<{ json: Record<string, unknown> }>;
-	responses?: unknown[];
+	responses?: Array<WireResponse | Error>;
 	executionId?: string;
 	nodeName?: string;
 	workflowId?: string;
@@ -23,7 +37,7 @@ interface ExecuteFixture {
 
 function makeExecuteContext(fx: ExecuteFixture) {
 	const requests: CapturedRequest[] = [];
-	const responses = [...(fx.responses ?? [{ allowed: true }])];
+	const responses = [...(fx.responses ?? [wire(200, CHECK_INPUT_ALLOW)])];
 	const credentials = fx.credentials ?? {
 		endpoint: 'https://axonflow.local',
 		clientId: 'tenant-abc',
@@ -57,6 +71,8 @@ function makeExecuteContext(fx: ExecuteFixture) {
 					url?: string;
 					headers?: Record<string, string>;
 					body?: Record<string, unknown>;
+					returnFullResponse?: boolean;
+					ignoreHttpStatusErrors?: unknown;
 				},
 			) => {
 				requests.push({
@@ -64,10 +80,11 @@ function makeExecuteContext(fx: ExecuteFixture) {
 					url: opts.url,
 					headers: opts.headers,
 					body: opts.body,
+					returnFullResponse: opts.returnFullResponse,
+					ignoreHttpStatusErrors: opts.ignoreHttpStatusErrors,
 				});
-				const next = responses.shift();
-				if (next instanceof Error) throw next;
-				return next ?? { allowed: true };
+				// n8n-core's behaviour, not a bare body: see n8nHelperAnswer.
+				return n8nHelperAnswer(responses.shift() ?? wire(200, CHECK_INPUT_ALLOW), opts);
 			},
 		},
 	};
@@ -92,7 +109,8 @@ test('checkPolicy posts to /api/v1/mcp/check-input with Idempotency-Key', async 
 			mcpOperation: 'execute',
 			parameters: '{"amount":5000}',
 		},
-		responses: [{ allowed: false, block_reason: 'requires_approval' }],
+		// v11 answers a denied statement with HTTP 403 (issue #9 item 1, and the spec).
+		responses: [wire(403, CHECK_INPUT_DENY)],
 	});
 
 	assert.equal(requests.length, 1);
@@ -181,14 +199,14 @@ test('waitForApproval posts to /api/v1/hitl/queue and unwraps approval_id from d
 			requestContext: '{"loan_id":"L-001"}',
 		},
 		responses: [
-			{
+			wire(200, {
 				success: true,
 				data: {
 					id: 'approval-uuid-1',
 					status: 'pending',
 					expires_at: '2026-05-23T00:00:00Z',
 				},
-			},
+			}),
 		],
 	});
 
@@ -224,14 +242,14 @@ test('waitForApproval includes notify_url when provided', async () => {
 			notifyUrl: 'http://n8n:5678/webhook/approval-resume',
 		},
 		responses: [
-			{
+			wire(200, {
 				success: true,
 				data: {
 					id: 'approval-uuid-2',
 					status: 'pending',
 					expires_at: '2026-05-24T00:00:00Z',
 				},
-			},
+			}),
 		],
 	});
 
@@ -256,10 +274,10 @@ test('waitForApproval omits notify_url when empty string (not sent as empty key)
 			notifyUrl: '',
 		},
 		responses: [
-			{
+			wire(200, {
 				success: true,
 				data: { id: 'a', status: 'pending' },
-			},
+			}),
 		],
 	});
 
@@ -319,12 +337,12 @@ test('continueOnFail wraps thrown error in json.error and proceeds', async () =>
 			mcpOperation: 'execute',
 			parameters: '{}',
 		},
-		responses: [new Error('axonflow 502')],
+		responses: [wire(502, { error: 'axonflow 502' })],
 		continueOnFail: true,
 	});
 
 	const out = (result as Array<Array<{ json: Record<string, unknown> }>>)[0][0].json;
-	assert.equal(out.error, 'axonflow 502');
+	assert.equal(out.error, 'AxonFlow failed to process the request (HTTP 502): axonflow 502');
 });
 
 test('description copy positions as "AxonFlow API integration" — no governance/audit/compliance wording at the package level', () => {
@@ -357,7 +375,7 @@ test('no banned wording in any operation action/description copy (verification-s
 });
 
 test('every operation defaults to the executionId-itemIndex-nodeName Idempotency-Key when none supplied (regression for all 4 ops)', async () => {
-	const ops: Array<{ op: string; extra: Record<string, unknown>; responses?: unknown[] }> = [
+	const ops: Array<{ op: string; extra: Record<string, unknown>; responses?: WireResponse[] }> = [
 		{
 			op: 'checkPolicy',
 			extra: {
@@ -404,7 +422,7 @@ test('every operation defaults to the executionId-itemIndex-nodeName Idempotency
 				requestContext: '{}',
 				notifyUrl: '',
 			},
-			responses: [{ success: true, data: { id: 'a', status: 'pending' } }],
+			responses: [wire(200, { success: true, data: { id: 'a', status: 'pending' } })],
 		},
 	];
 
@@ -435,7 +453,7 @@ test('failureMode "open" (default) returns a fallback item on transport error (n
 			// failureMode omitted → exercises the 'open' default fallback in
 			// getNodeParameter (matches the ADK plugin's canonical default).
 		},
-		responses: [new Error('ECONNREFUSED axonflow:8080')],
+		responses: [noResponse('ECONNREFUSED axonflow:8080')],
 	});
 
 	assert.equal(requests.length, 1);
@@ -446,8 +464,7 @@ test('failureMode "open" (default) returns a fallback item on transport error (n
 });
 
 test('failureMode "open" swallows HTTP 5xx (AxonFlow server-side fault)', async () => {
-	const err = Object.assign(new Error('AxonFlow returned 503'), { httpCode: '503' });
-	const { result } = await runExecute({
+		const { result } = await runExecute({
 		params: {
 			operation: 'checkPolicy',
 			idempotencyKey: 'k',
@@ -457,15 +474,14 @@ test('failureMode "open" swallows HTTP 5xx (AxonFlow server-side fault)', async 
 			mcpOperation: 'execute',
 			parameters: '{}',
 		},
-		responses: [err],
+		responses: [wire(503, { error: 'AxonFlow returned 503' })],
 	});
 	const out = (result as Array<Array<{ json: Record<string, unknown> }>>)[0][0].json;
 	assert.equal(out._axonflow_unreachable, true);
 });
 
 test('failureMode "open" RETHROWS HTTP 401 (bad creds — must surface to user)', async () => {
-	const err = Object.assign(new Error('401 Unauthorized'), { httpCode: '401' });
-	await assert.rejects(
+		await assert.rejects(
 		runExecute({
 			params: {
 				operation: 'checkPolicy',
@@ -476,15 +492,14 @@ test('failureMode "open" RETHROWS HTTP 401 (bad creds — must surface to user)'
 				mcpOperation: 'execute',
 				parameters: '{}',
 			},
-			responses: [err],
+			responses: [wire(401, MIDDLEWARE_401)],
 		}),
 		/401/,
 	);
 });
 
 test('failureMode "open" RETHROWS HTTP 404 (wrong tier / endpoint missing — must surface)', async () => {
-	const err = Object.assign(new Error('404 Not Found'), { httpCode: '404' });
-	await assert.rejects(
+		await assert.rejects(
 		runExecute({
 			params: {
 				operation: 'waitForApproval',
@@ -499,15 +514,14 @@ test('failureMode "open" RETHROWS HTTP 404 (wrong tier / endpoint missing — mu
 				limitWaitTime: 60,
 				requestContext: '{}',
 			},
-			responses: [err],
+			responses: [wire(404, HITL_QUEUE_404)],
 		}),
 		/404/,
 	);
 });
 
 test('failureMode "open" RETHROWS HTTP 422 (malformed body — programmer error)', async () => {
-	const err = Object.assign(new Error('422 Unprocessable Entity'), { httpCode: '422' });
-	await assert.rejects(
+		await assert.rejects(
 		runExecute({
 			params: {
 				operation: 'recordDecision',
@@ -521,15 +535,14 @@ test('failureMode "open" RETHROWS HTTP 422 (malformed body — programmer error)
 				auditSuccess: true,
 				auditErrorMessage: '',
 			},
-			responses: [err],
+			responses: [wire(422, { error: 'Unprocessable Entity' })],
 		}),
 		/422/,
 	);
 });
 
 test('failureMode "open" RETHROWS HTTP 429 (rate limit — n8n Retry on Fail should observe this)', async () => {
-	const err = Object.assign(new Error('429 Too Many Requests'), { httpCode: '429' });
-	await assert.rejects(
+		await assert.rejects(
 		runExecute({
 			params: {
 				operation: 'checkPolicy',
@@ -540,15 +553,14 @@ test('failureMode "open" RETHROWS HTTP 429 (rate limit — n8n Retry on Fail sho
 				mcpOperation: 'execute',
 				parameters: '{}',
 			},
-			responses: [err],
+			responses: [wire(429, PER_MINUTE_429, { 'retry-after': '60' })],
 		}),
 		/429/,
 	);
 });
 
 test('shouldFailOpen probes both `httpCode` string and `context.statusCode` number shapes (forward-compat across n8n versions)', async () => {
-	const errContext = Object.assign(new Error('boom'), { context: { statusCode: 502 } });
-	const { result } = await runExecute({
+		const { result } = await runExecute({
 		params: {
 			operation: 'auditLog',
 			idempotencyKey: 'k',
@@ -561,7 +573,7 @@ test('shouldFailOpen probes both `httpCode` string and `context.statusCode` numb
 			auditSuccess: false,
 			auditErrorMessage: 'e',
 		},
-		responses: [errContext],
+		responses: [wire(502, { error: 'boom' })],
 	});
 	const out = (result as Array<Array<{ json: Record<string, unknown> }>>)[0][0].json;
 	assert.equal(out._axonflow_unreachable, true);
@@ -579,7 +591,7 @@ test('failureMode "closed" re-throws on transport error (opt-in for high-stakes 
 				mcpOperation: 'execute',
 				parameters: '{}',
 			},
-			responses: [new Error('ECONNREFUSED axonflow:8080')],
+			responses: [noResponse('ECONNREFUSED axonflow:8080')],
 		}),
 		/ECONNREFUSED/,
 	);
@@ -603,7 +615,7 @@ test('failureMode "open" still re-throws NodeOperationError (programmer errors a
 				// NodeOperationError, NOT a transport error, so it must still
 				// throw rather than emit a fallback item.
 			},
-			responses: [{ id: 'a', status: 'pending' }],
+			responses: [wire(200, { id: 'a', status: 'pending' })],
 		}),
 		(err: Error) => /missing `data` envelope/.test(err.message),
 	);
@@ -626,7 +638,7 @@ test('waitForApproval throws when AxonFlow returns a response without the data e
 			},
 			// Bare shape — no APIResponse envelope. The node should refuse rather
 			// than emit an approval-id-less item downstream.
-			responses: [{ id: 'a', status: 'pending' }],
+			responses: [wire(200, { id: 'a', status: 'pending' })],
 		}),
 		(err: Error) => /missing `data` envelope/.test(err.message),
 	);
@@ -668,7 +680,7 @@ test('checkPolicy sends the capability handshake when an audience is configured'
 			userToken: 'utok-xyz',
 			pepAudience: 'axonflow-decision-proof',
 		},
-		responses: [{ allowed: true }],
+		responses: [wire(200, CHECK_INPUT_ALLOW)],
 	});
 
 	assert.equal(
@@ -690,7 +702,7 @@ test('no handshake header at all when no audience is configured', async () => {
 			mcpOperation: 'execute',
 			parameters: '{}',
 		},
-		responses: [{ allowed: true }],
+		responses: [wire(200, CHECK_INPUT_ALLOW)],
 	});
 
 	assert.ok(!('X-Axonflow-PEP-Handshake' in (requests[0].headers ?? {})));
@@ -722,7 +734,7 @@ test('the node passes redacted_statement and redaction_evaluated through UNMODIF
 			parameters: '{}',
 		},
 		responses: [
-			{ allowed: true, redacted: true, redaction_evaluated: true, redacted_statement: masked },
+			wire(200, { allowed: true, redacted: true, redaction_evaluated: true, redacted_statement: masked }),
 		],
 	});
 
@@ -779,8 +791,8 @@ for (const params of EVERY_OPERATION) {
 			params: { ...params, idempotencyKey: 'k' },
 			responses: [
 				params.operation === 'waitForApproval'
-					? { success: true, data: { id: 'approval-uuid-1', status: 'pending', expires_at: '2026-05-23T00:00:00Z' } }
-					: { allowed: true },
+					? wire(200, HITL_CREATED)
+					: wire(200, CHECK_INPUT_ALLOW),
 			],
 		});
 		assert.ok(requests.length >= 1);

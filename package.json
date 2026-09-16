@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc && node ./scripts/copy-assets.js",
     "lint": "eslint nodes credentials package.json",
-    "test": "node --test --import tsx test/AxonFlow.node.test.ts test/AxonFlowApi.credentials.test.ts test/pep-handshake.test.ts",
+    "test": "node --test --import tsx test/AxonFlow.node.test.ts test/status-and-body.test.ts test/AxonFlowApi.credentials.test.ts test/pep-handshake.test.ts",
     "format": "prettier nodes credentials --write",
     "prepublishOnly": "npm run build"
   },
@@ -54,7 +54,7 @@
     "@typescript-eslint/parser": "^7.15.0",
     "eslint": "^8.57.0",
     "eslint-plugin-n8n-nodes-base": "^1.16.3",
-    "n8n-workflow": "^1.82.0",
+    "n8n-workflow": "2.11.1",
     "prettier": "^3.3.3",
     "tsx": "^4.16.0",
     "typescript": "^5.4.0"

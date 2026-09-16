@@ -6,7 +6,10 @@ import {
 	INodeType,
 	INodeTypeDescription,
 	NodeOperationError,
+	NodeApiError,
 	IHttpRequestOptions,
+	IN8nHttpFullResponse,
+	JsonObject,
 } from 'n8n-workflow';
 
 import { PEP_HANDSHAKE_HEADER, buildPepHandshake } from './pep-handshake';
@@ -18,7 +21,12 @@ import { PEP_HANDSHAKE_HEADER, buildPepHandshake } from './pep-handshake';
  *   - checkPolicy        → POST /api/v1/mcp/check-input
  *   - recordDecision     → POST /api/v1/audit/tool-call (success path)
  *   - auditLog           → POST /api/v1/audit/tool-call (error / generic path)
- *   - waitForApproval    → POST /api/v1/hitl/queue, then pause until webhook resume
+ *   - waitForApproval    → POST /api/v1/hitl/queue (Enterprise only), returning at once
+ *
+ * Every request asks n8n for the full response and for no exception on an HTTP
+ * status, so the node sees the platform's status AND body and decides in one
+ * place (`interpretResponse`) what they mean: a decision item, or an error that
+ * names its cause and quotes the platform.
  *
  * Every operation sends an Idempotency-Key header by default so n8n's
  * `Retry on Fail` re-runs don't double-record. Left empty, the key is
@@ -77,8 +85,9 @@ export class AxonFlow implements INodeType {
 					{
 						name: 'Wait for Approval',
 						value: 'waitForApproval',
-						description: 'Create a HITL approval request and pause the workflow until a reviewer responds',
-						action: 'Wait for HITL approval',
+						description:
+							'Create a HITL approval request (AxonFlow Enterprise) and return at once; pair it with a Wait node to pause',
+						action: 'Create a HITL approval request',
 					},
 				],
 				default: 'checkPolicy',
@@ -331,7 +340,7 @@ export class AxonFlow implements INodeType {
 			// covers only an undefined parameter.
 			const idempotencyKey =
 				(this.getNodeParameter('idempotencyKey', i, '') as string) ||
-				`${this.getExecutionId()}-${i}-${this.getNode().name}`;
+				defaultIdempotencyKey(this.getExecutionId(), i, this.getNode().name);
 			const failureMode = this.getNodeParameter('failureMode', i, 'open') as
 				| 'open'
 				| 'closed';
@@ -341,9 +350,9 @@ export class AxonFlow implements INodeType {
 
 				switch (operation) {
 					case 'checkPolicy':
-						result = await this.helpers.httpRequestWithAuthentication.call(
+						result = await callAxonFlow(
 							this,
-							'axonFlowApi',
+							operation,
 							buildRequest({
 								endpoint,
 								method: 'POST',
@@ -368,9 +377,9 @@ export class AxonFlow implements INodeType {
 
 					case 'recordDecision':
 					case 'auditLog':
-						result = await this.helpers.httpRequestWithAuthentication.call(
+						result = await callAxonFlow(
 							this,
-							'axonFlowApi',
+							operation,
 							buildRequest({
 								endpoint,
 								method: 'POST',
@@ -427,9 +436,9 @@ export class AxonFlow implements INodeType {
 						if (notifyUrl) {
 							hitlBody.notify_url = notifyUrl;
 						}
-						const createResp = (await this.helpers.httpRequestWithAuthentication.call(
+						const createResp = await callAxonFlow(
 							this,
-							'axonFlowApi',
+							operation,
 							buildRequest({
 								endpoint,
 								method: 'POST',
@@ -437,7 +446,7 @@ export class AxonFlow implements INodeType {
 								idempotencyKey,
 								body: hitlBody,
 							}),
-						)) as IDataObject;
+						);
 
 						const approvalData = extractApprovalData(createResp, this.getNode());
 
@@ -493,10 +502,18 @@ export class AxonFlow implements INodeType {
 				// NodeOperationError is reserved for true programmer errors
 				// (unknown operation, missing-envelope response) — always
 				// rethrown regardless of failureMode.
+				//
+				// The fallback item is never silent: `governance: 'unavailable'` and
+				// `cause` say that no decision was made and why. It deliberately has
+				// NO `allowed` key. Workflows branch on `{{ $json.allowed }}`, which
+				// is falsy on this item; adding `allowed: true` would send every
+				// saved workflow down its TRUE branch during an outage.
 				if (failureMode === 'open' && shouldFailOpen(error)) {
 					returnData.push({
 						json: {
 							_axonflow_unreachable: true,
+							governance: 'unavailable',
+							cause: unreachableCause(error),
 							error: (error as Error).message,
 							operation,
 						},
@@ -551,7 +568,220 @@ function buildRequest(args: BuildRequestArgs): IHttpRequestOptions {
 		headers,
 		body: args.body,
 		json: true,
+		// Without these n8n throws its own NodeApiError on any non-2xx before the
+		// node sees the body, and a policy deny (HTTP 403 on check-input) reads
+		// "Forbidden - perhaps check your credentials?".
+		returnFullResponse: true,
+		ignoreHttpStatusErrors: true,
 	};
+}
+
+/**
+ * The platform's Idempotency-Key alphabet and length
+ * (platform/shared/idempotency/store.go). A key outside either is refused with
+ * HTTP 400, so every call of the node would fail.
+ */
+const IDEMPOTENCY_KEY_INVALID = /[^A-Za-z0-9_.:\-/]/g;
+const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
+
+/**
+ * `<execution id>-<item index>-<node name>`, made a key the platform accepts.
+ *
+ * A node name is free text ("AxonFlow Check Policy"), so each character
+ * outside the platform's alphabet becomes `_`. When anything was replaced or
+ * cut to fit 256 characters, a hash of the original name is appended, so two
+ * names that differ only there still get different keys. A valid name that
+ * fits is used unchanged, which keeps every existing default key as it was.
+ */
+function defaultIdempotencyKey(executionId: string, itemIndex: number, nodeName: string): string {
+	const prefix = `${String(executionId).replace(IDEMPOTENCY_KEY_INVALID, '_')}-${itemIndex}-`;
+	const safe = nodeName.replace(IDEMPOTENCY_KEY_INVALID, '_');
+	const room = MAX_IDEMPOTENCY_KEY_LENGTH - prefix.length;
+	if (safe === nodeName && safe.length <= room) {
+		return prefix + safe;
+	}
+	const suffix = `-${fnv1a32(nodeName)}`;
+	return prefix + safe.slice(0, Math.max(0, room - suffix.length)) + suffix;
+}
+
+/** FNV-1a over UTF-16 code units, as 8 hex digits. Not a security hash. */
+function fnv1a32(text: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, '0');
+}
+
+/** The longest platform text quoted into an error message. */
+const MAX_PLATFORM_TEXT = 500;
+
+async function callAxonFlow(
+	ctx: IExecuteFunctions,
+	operation: string,
+	request: IHttpRequestOptions,
+): Promise<IDataObject> {
+	const response = (await ctx.helpers.httpRequestWithAuthentication.call(
+		ctx,
+		'axonFlowApi',
+		request,
+	)) as unknown;
+	return interpretResponse(ctx.getNode(), operation, response);
+}
+
+/**
+ * The ONE place a status and a body become a result or an error.
+ *
+ * - 2xx: the body, verbatim.
+ * - Check Policy, 403 carrying `allowed: false`: a policy deny (the spec's
+ *   "Input blocked by policy", body MCPCheckInputResponse). Returned as the
+ *   item, verbatim, so a downstream IF branches on `allowed` and reads
+ *   `block_reason`, which carries an `unknown_constraint` or
+ *   `approval_required` refusal in full. A 403 WITHOUT `allowed: false` is not
+ *   a decision: a tier-feature limit answers 403 with the rate-limit envelope.
+ * - Every other status is an error that names its cause and quotes the
+ *   platform: 401 the credential, 402 a tier limit, 429 a rate limit (with
+ *   `limit_type` and `resets_at` when the envelope carries them), 404 on the
+ *   approval queue the edition, 5xx a platform fault. Only a 5xx is swallowable
+ *   by `shouldFailOpen`; every 4xx is rethrown under either failure mode.
+ */
+function interpretResponse(node: INode, operation: string, response: unknown): IDataObject {
+	if (!isObject(response) || typeof response.statusCode !== 'number') {
+		throw new NodeOperationError(
+			node,
+			'AxonFlow request returned no HTTP status, so the node cannot tell a decision from an error and refuses to continue.',
+		);
+	}
+	const full = response as unknown as IN8nHttpFullResponse;
+	const status = full.statusCode;
+	const body = full.body;
+
+	if (status >= 200 && status < 300) {
+		if (!isObject(body)) {
+			throw new NodeOperationError(
+				node,
+				`AxonFlow answered HTTP ${status} without a JSON object body, so the node cannot read a result from it.`,
+			);
+		}
+		return body as IDataObject;
+	}
+	if (operation === 'checkPolicy' && status === 403 && isObject(body) && body.allowed === false) {
+		return body as IDataObject;
+	}
+	throw platformError(node, operation, status, body, full.headers ?? {});
+}
+
+function platformError(
+	node: INode,
+	operation: string,
+	status: number,
+	body: unknown,
+	headers: IDataObject,
+): NodeApiError {
+	const said = platformText(body);
+	const limit = limitDetails(body, headers);
+	let message: string;
+	if (status === 401) {
+		message = `AxonFlow rejected the credential (HTTP 401): ${said}. Check the Client ID and User Token of the AxonFlow API credential.`;
+	} else if (status === 402) {
+		// Not in the published spec for check-input (axonflow-enterprise#4249,
+		// comment 5682255301); answered when a tier limit refuses the principal.
+		message = `AxonFlow refused the request: a tier limit of this deployment was reached (HTTP 402${limit}): ${said}`;
+	} else if (status === 429) {
+		message = `AxonFlow refused the request: a rate limit was reached (HTTP 429${limit}): ${said}`;
+	} else if (status === 404 && operation === 'waitForApproval') {
+		message = `AxonFlow has no approval queue at this endpoint (HTTP 404): /api/v1/hitl/queue is served by AxonFlow Enterprise only, so a Community deployment cannot create an approval request: ${said}`;
+	} else if (status === 403 && operation === 'checkPolicy' && isObject(body) && body.allowed === true) {
+		message = `AxonFlow answered HTTP 403 with allowed: true, which is not a decision the node can act on, so the request is treated as refused: ${said}`;
+	} else if (status >= 400 && status < 500 && isObject(body) && typeof body.limit_type === 'string') {
+		message = `AxonFlow refused the request: a tier limit was reached (HTTP ${status}${limit}): ${said}`;
+	} else if (status >= 500 && status < 600) {
+		message = `AxonFlow failed to process the request (HTTP ${status}): ${said}`;
+	} else {
+		message = `AxonFlow refused the request (HTTP ${status}): ${said}`;
+	}
+	const error = new NodeApiError(node, { httpCode: String(status) } as JsonObject, {
+		message,
+		httpCode: String(status),
+	});
+	// NodeApiError replaces a message that merely CONTAINS a Node error code
+	// (ECONNREFUSED, ENOENT, ...) with n8n's canned text, and the platform's
+	// quoted text can contain one. The message is the point of this error.
+	error.message = message;
+	return error;
+}
+
+/**
+ * The platform's own words from an error body, cleaned for a one-line message:
+ * a string `error` (with its `error_description` when there is one), an
+ * `error.message` (the middleware envelope, with its `code`), a `message`, a
+ * `block_reason`, or the body itself. ASCII control
+ * characters become spaces and the text is capped.
+ */
+function platformText(body: unknown): string {
+	let text = '';
+	if (typeof body === 'string') {
+		text = body;
+	} else if (isObject(body)) {
+		const err = body.error;
+		if (typeof err === 'string') {
+			text = typeof body.error_description === 'string' ? `${err}: ${body.error_description}` : err;
+		} else if (isObject(err) && typeof err.message === 'string') {
+			text = err.code !== undefined ? `${String(err.code)}: ${err.message}` : err.message;
+		} else if (typeof body.message === 'string') {
+			text = body.message;
+		} else if (typeof body.block_reason === 'string') {
+			text = body.block_reason;
+		} else {
+			text = JSON.stringify(body);
+		}
+	} else if (body !== undefined && body !== null) {
+		text = JSON.stringify(body);
+	}
+	return cleanText(text) || '(the response carried no error text)';
+}
+
+/**
+ * `, limit_type "daily_quota", resets at <time>, retry after 30 s`, from the
+ * rate-limit envelope and the Retry-After header, each part only when present.
+ * A `resets_at` that is not a date is quoted as given and marked.
+ */
+function limitDetails(body: unknown, headers: IDataObject): string {
+	const parts: string[] = [];
+	if (isObject(body)) {
+		const limitType = typeof body.limit_type === 'string' ? cleanText(body.limit_type) : '';
+		if (limitType) {
+			parts.push(`limit_type "${limitType}"`);
+		}
+		const resets = typeof body.resets_at === 'string' ? cleanText(body.resets_at) : '';
+		if (resets) {
+			parts.push(
+				Number.isNaN(Date.parse(resets)) ? `resets_at "${resets}" (not a date)` : `resets at ${resets}`,
+			);
+		}
+	}
+	const retryAfter = headers['retry-after'] ?? headers['Retry-After'];
+	if (typeof retryAfter === 'string' && /^\d+$/.test(retryAfter.trim())) {
+		parts.push(`retry after ${retryAfter.trim()} s`);
+	}
+	return parts.length ? `, ${parts.join(', ')}` : '';
+}
+
+function cleanText(text: string): string {
+	// eslint-disable-next-line no-control-regex
+	const cleaned = text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ').trim();
+	return cleaned.length > MAX_PLATFORM_TEXT ? `${cleaned.slice(0, MAX_PLATFORM_TEXT)}…` : cleaned;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** `http_503` for a platform fault, `no_response` when nothing answered. */
+function unreachableCause(error: unknown): string {
+	const code = httpCodeOf(error);
+	return code === undefined ? 'no_response' : `http_${code}`;
 }
 
 /**
@@ -570,20 +800,17 @@ function buildRequest(args: BuildRequestArgs): IHttpRequestOptions {
  *     are problems the user needs to see and fix. Swallowing them would let a
  *     workflow run un-governed and never surface to the user.
  *
- * n8n's `httpRequestWithAuthentication` throws `NodeApiError` (not
- * `NodeOperationError`) on non-2xx responses, with the HTTP code on
- * `error.httpCode` (string) or `error.context?.statusCode` (number). We probe
- * both shapes to stay forward-compatible across n8n versions.
+ * An HTTP status reaches here as the `NodeApiError` that `interpretResponse`
+ * built, with the code on `error.httpCode` (string). A transport failure is
+ * n8n's own error, with no code. `error.context?.statusCode` (number) is probed
+ * too, the shape n8n's own status errors have carried.
  */
 function shouldFailOpen(error: unknown): boolean {
 	if (error instanceof NodeOperationError) return false;
 
-	const err = error as { httpCode?: string | number; context?: { statusCode?: number }; cause?: { code?: string } };
-	const httpCode =
-		(typeof err.httpCode === 'string' ? parseInt(err.httpCode, 10) : err.httpCode) ??
-		err.context?.statusCode;
+	const httpCode = httpCodeOf(error);
 
-	if (typeof httpCode === 'number' && !Number.isNaN(httpCode)) {
+	if (httpCode !== undefined) {
 		// 5xx → AxonFlow itself is faulting → swallow.
 		// 4xx → caller error → rethrow so the user sees it.
 		return httpCode >= 500 && httpCode < 600;
@@ -591,6 +818,13 @@ function shouldFailOpen(error: unknown): boolean {
 
 	// No httpCode → transport-level failure → swallow.
 	return true;
+}
+
+function httpCodeOf(error: unknown): number | undefined {
+	const err = error as { httpCode?: string | number | null; context?: { statusCode?: number } };
+	const raw = typeof err.httpCode === 'string' ? parseInt(err.httpCode, 10) : err.httpCode;
+	const code = typeof raw === 'number' ? raw : err.context?.statusCode;
+	return typeof code === 'number' && !Number.isNaN(code) ? code : undefined;
 }
 
 function parseJsonParam(value: string | object): IDataObject {
