@@ -515,3 +515,11 @@ test('default key: the platform alphabet is case-sensitive, so names differing o
 	assert.match(a, /^12345-0-A_b-[0-9a-f]{8}$/);
 	assert.match(b, /^12345-0-A_B-[0-9a-f]{8}$/);
 });
+
+test('default key: two invalid names that sanitise to the same text get different keys (the hash reads the ORIGINAL name)', async () => {
+	const a = await defaultKeyFor('A B');
+	const b = await defaultKeyFor('A(B');
+	assert.match(a, /^12345-0-A_B-[0-9a-f]{8}$/);
+	assert.match(b, /^12345-0-A_B-[0-9a-f]{8}$/);
+	assert.notEqual(a, b);
+});
