@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -32,8 +32,9 @@ test('spellings: every EXPECT line is reported once, at its own line, and nothin
 for (const [dir, inScope, findings] of [
 	['suite', 1, []],
 	['no-pipefail', 0, []],
-	['lib', 1, ['helper.sh:6']],
+	['lib-scope', 1, ['helper.sh:6']],
 	['sourced', 2, ['helpers.sh:5']],
+	['errexit-spelling', 1, ['long_options.sh:4']],
 ] as Array<[string, number, string[]]>) {
 	test(`control ${dir}: ${inScope} in scope, findings ${JSON.stringify(findings)}`, () => {
 		const result = scan([join(FIXTURES, 'control', dir)]);
@@ -53,6 +54,13 @@ test('a planted producer | grep -q in a clean pipefail script is reported', () =
 		result.findings.map((f) => f.line),
 		[4],
 	);
+});
+
+test('a scan root that itself sits under a lib/ directory does not put its scripts in scope', () => {
+	const root = join(mkdtempSync(join(tmpdir(), 'grep-q-lib-')), 'lib', 'checkout');
+	mkdirSync(root, { recursive: true });
+	writeFileSync(join(root, 'plain.sh'), '#!/bin/sh\nprintf a | grep -q a\n');
+	assert.deepEqual(scan([root]).inScope, []);
 });
 
 test('the runtime-e2e harness has no producer | grep -q under pipefail', () => {

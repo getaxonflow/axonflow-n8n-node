@@ -31,6 +31,13 @@ const path = require('node:path');
 
 const EARLY_EXIT_LONG = new Set(['--quiet', '--silent', '--max-count', '--files-with-matches', '--files-without-match']);
 const GREPS = new Set(['grep', 'egrep', 'fgrep']);
+// Commands that run the command after them, so `timeout 5 grep -q` and
+// `xargs grep -ql` are a grep reading the pipe. The value is how many leading
+// non-option words the wrapper itself takes (timeout's duration).
+const COMMAND_WRAPPERS = new Map([
+	['command', 0], ['env', 0], ['exec', 0], ['nice', 0], ['nohup', 0],
+	['stdbuf', 0], ['time', 0], ['timeout', 1], ['xargs', 0],
+]);
 
 function listShellFiles(target) {
 	const stat = fs.statSync(target);
@@ -83,7 +90,14 @@ function codeOf(source) {
 				i += 2;
 				continue;
 			}
-			if (inCode()) chars.push({ c: ' ', line }, { c: ' ', line });
+			if (inCode()) {
+				// An escaped word character stays part of its word (`\grep` is
+				// grep); an escaped metacharacter (`\|`) is not syntax, so it is
+				// blanked.
+				const next = source[i + 1];
+				if ("|&;()<>'\"`$# \t\\".includes(next)) chars.push({ c: ' ', line }, { c: ' ', line });
+				else chars.push({ c: '\\', line }, { c: next, line });
+			}
 			i += 2;
 			continue;
 		}
@@ -149,7 +163,8 @@ function setsPipefail(source) {
 		.map((x) => x.c)
 		.join('')
 		.split(/[\n;]/)
-		.some((stmt) => /(^|\s)set\s+(-[A-Za-z]*\s+)*(-[A-Za-z]*o\s+pipefail|-o\s+pipefail)\b/.test(stmt));
+		// `set -euo pipefail`, `set -o errexit -o pipefail`, `set -e -o pipefail`
+		.some((stmt) => /(^|\s)set\s+(\S+\s+)*-[A-Za-z]*o\s+pipefail\b/.test(stmt));
 }
 
 function sourcedNames(source) {
@@ -166,10 +181,25 @@ function sourcedNames(source) {
 
 function isEarlyExitGrep(words) {
 	let k = 0;
-	while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) k++;
-	if (words[k] === 'command') k++;
-	if (!GREPS.has(words[k])) return false;
-	for (const w of words.slice(k + 1)) {
+	while (k < words.length) {
+		const w = words[k].replace(/^[({!]+/, '');
+		if (w === '' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+			k++; // `{`, `(`, `!` on their own, or an assignment
+			continue;
+		}
+		const name = path.posix.basename(w.replace(/^\\/, ''));
+		if (COMMAND_WRAPPERS.has(name)) {
+			k++;
+			while (k < words.length && words[k].startsWith('-')) k++;
+			k += COMMAND_WRAPPERS.get(name);
+			continue;
+		}
+		if (!GREPS.has(name)) return false;
+		break;
+	}
+	if (k >= words.length) return false;
+	for (const raw of words.slice(k + 1)) {
+		const w = raw.replace(/[;})]+$/, '');
 		if (w === '--') break;
 		if (EARLY_EXIT_LONG.has(w.split('=')[0])) return true;
 		if (/^-[A-Za-z0-9]*[qmlL]/.test(w) && !w.startsWith('--')) return true;
@@ -207,14 +237,20 @@ function findingsIn(source) {
 }
 
 function scan(targets) {
-	const files = [...new Set(targets.flatMap((t) => listShellFiles(t)))];
+	// Each file's path below the scan root it was found under: the lib/ scope
+	// reads only directories inside the scan, never the checkout's own location.
+	const rel = new Map();
+	for (const t of targets) {
+		for (const f of listShellFiles(t)) if (!rel.has(f)) rel.set(f, path.relative(t, f));
+	}
+	const files = [...rel.keys()];
 	const sources = new Map(files.map((f) => [f, fs.readFileSync(f, 'utf8')]));
 	const sourced = new Set();
 	for (const text of sources.values()) for (const name of sourcedNames(text)) sourced.add(name);
 	const inScope = files.filter(
 		(f) =>
 			setsPipefail(sources.get(f)) ||
-			f.split(path.sep).some((part) => part === 'lib' || part === '_lib') ||
+			path.dirname(rel.get(f)).split(path.sep).some((part) => part === 'lib' || part === '_lib') ||
 			sourced.has(path.basename(f)),
 	);
 	const findings = [];

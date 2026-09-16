@@ -169,7 +169,7 @@ cd axonflow-n8n-node
 npm install
 npm run build       # tsc > dist/
 npm run lint
-npm test            # node --test (127 tests)
+npm test            # node --test (129 tests)
 ```
 
 `n8n-workflow` is pinned to exactly `2.11.1` on purpose. From 2.12.0 the package depends on `isolated-vm`, a native module whose Node floor (22, then 24) is above this package's CI matrix (Node 18, 20 and 22), so a routine bump breaks `npm ci` there. Compatibility with the n8n release this node targets (2.38.7) is proven by the runtime legs, which run the pinned `n8nio/n8n:2.38.7` image and CLI, not by these unit types.
