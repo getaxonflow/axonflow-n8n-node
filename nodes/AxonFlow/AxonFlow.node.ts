@@ -758,13 +758,16 @@ function interpretResponse(
 				`AxonFlow answered HTTP ${status} without a JSON object body, so the node cannot read a result from it.`,
 			);
 		}
-		if (operation === 'checkPolicy' && body.allowed === false && onDeny === 'error') {
+		if (operation === 'checkPolicy' && body.allowed === false && onDeny !== 'output') {
 			throw denyError(node, status, body);
 		}
 		return body as IDataObject;
 	}
 	if (operation === 'checkPolicy' && status === 403 && isObject(body) && body.allowed === false) {
-		if (onDeny === 'error') {
+		// Only an explicit 'output' lets a deny through as an item: any other
+		// value (an expression that resolved to nothing, a mistyped 'Error')
+		// stops, so bad input can never let a workflow run past a deny.
+		if (onDeny !== 'output') {
 			throw denyError(node, status, body);
 		}
 		return body as IDataObject;
@@ -799,9 +802,11 @@ function platformError(
 	const said = platformText(body);
 	const limit = limitDetails(body, headers);
 	let message: string;
-	if (status === 401 && said.includes('user_token_required')) {
-		// The organization requires a per-user token, which this node never
-		// sends: the credential is not what is wrong.
+	if (status === 401 && said.startsWith('Invalid user token')) {
+		// This node never sends a per-user token, so a check of one can only
+		// have failed because the organization requires one (the platform
+		// answers "Invalid user token: token required"): the credential is not
+		// what is wrong.
 		message = `AxonFlow refused the request (HTTP 401): this organization requires a per-user token, which the n8n node does not send: ${said}`;
 	} else if (status === 401) {
 		message = `AxonFlow rejected the credential (HTTP 401): ${said.replace(/\.+$/, '')}. Check the Client ID and User Token of the AxonFlow API credential.`;

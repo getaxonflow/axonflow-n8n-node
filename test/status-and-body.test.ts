@@ -73,7 +73,9 @@ interface Run {
 	typeVersion?: number;
 }
 
-async function run({ params, response, continueOnFail = false, typeVersion = 2 }: Run) {
+async function run(runArgs: Run) {
+	const { params, response, continueOnFail = false } = runArgs;
+	const typeVersion = 'typeVersion' in runArgs ? runArgs.typeVersion : 2;
 	const requests: Json[] = [];
 	const ctx = {
 		getInputData: () => [{ json: {} }],
@@ -614,9 +616,17 @@ test('the node declares versions 1 and 2, defaults new nodes to 2, and gives On 
 
 // ─── 401 causes, approvals, transport errors ─────────────────────────────────
 
-test('401 user_token_required names the organization rule, not the credential', async () => {
-	const err = await errorOf({ params: CHECK_POLICY, response: wire(401, { success: false, error: 'user_token_required' }) });
-	assert.equal(err.message, 'AxonFlow refused the request (HTTP 401): this organization requires a per-user token, which the n8n node does not send: user_token_required');
+test('401 for a required per-user token names the organization rule, not the credential', async () => {
+	// SOURCE-DERIVED: check-input answers an organization that requires a user
+	// token, when none is sent, with sendErrorResponse("Invalid user token: token
+	// required") (authenticator.go and run.go at axonflow-enterprise 76fb9d376).
+	const err = await errorOf({ params: CHECK_POLICY, response: wire(401, { success: false, error: 'Invalid user token: token required' }) });
+	assert.equal(err.message, 'AxonFlow refused the request (HTTP 401): this organization requires a per-user token, which the n8n node does not send: Invalid user token: token required');
+});
+
+test('a 401 for anything else still names the credential', async () => {
+	const err = await errorOf({ params: CHECK_POLICY, response: wire(401, { success: false, error: 'Authentication required' }) });
+	assert.match(err.message, /^AxonFlow rejected the credential \(HTTP 401\): Authentication required\. Check the Client ID/);
 });
 
 test('401 platform text ending in a period is not doubled', async () => {
@@ -642,4 +652,41 @@ test('a transport error as n8n reports it (httpCode ECONNREFUSED, not a number) 
 	assert.equal(item.cause, 'no_response');
 	assert.equal('allowed' in item, false);
 	await assert.rejects(run({ params: { ...CHECK_POLICY, failureMode: 'closed' }, response: noResponse() }), /ECONNREFUSED/);
+});
+
+test('On Deny with any value other than "output" stops on a deny (an expression resolving to nothing, a mistyped value)', async () => {
+	for (const onDeny of ['', 'Error', 'stop', 'OUTPUT', null, 0]) {
+		for (const typeVersion of [1, 2]) {
+			const err = await errorOf({ params: { ...CHECK_POLICY, onDeny }, response: wire(403, CHECK_INPUT_DENY), typeVersion });
+			assert.match(err.message, /^AxonFlow denied the request: explicit_constraint/, `onDeny=${JSON.stringify(onDeny)} v${typeVersion}`);
+		}
+	}
+});
+
+test('On Deny on a node with no typeVersion falls back to stop', async () => {
+	const err = await errorOf({ params: CHECK_POLICY, response: wire(403, CHECK_INPUT_DENY), typeVersion: undefined as unknown as number });
+	assert.match(err.message, /^AxonFlow denied the request/);
+});
+
+test('default key: the run index is read from the workflow data proxy', async () => {
+	const requests: Json[] = [];
+	const ctx = {
+		getInputData: () => [{ json: {} }],
+		getCredentials: async () => ({ endpoint: 'https://axonflow.local', clientId: 'c', userToken: 't' }),
+		getNodeParameter: (name: string, _i: number, fallback?: unknown) =>
+			name in CHECK_POLICY && name !== 'idempotencyKey' ? (CHECK_POLICY as Json)[name] : fallback,
+		getNode: () => ({ name: 'AxonFlow', typeVersion: 2 }),
+		getWorkflowDataProxy: () => ({ $runIndex: 7 }),
+		getExecutionId: () => '5',
+		continueOnFail: () => false,
+		helpers: {
+			httpRequestWithAuthentication: async (_c: string, opts: Json & { returnFullResponse?: boolean; ignoreHttpStatusErrors?: unknown }) => {
+				requests.push(opts);
+				return n8nHelperAnswer(wire(200, CHECK_INPUT_ALLOW), opts);
+			},
+		},
+	};
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	await (new AxonFlow().execute as any).call(ctx);
+	assert.match((requests[0].headers as Record<string, string>)['Idempotency-Key'], /^5-0-7-AxonFlow-[0-9a-f]{8}$/);
 });
