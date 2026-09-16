@@ -121,11 +121,18 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Build AxonFlow agent image
+      - name: Build AxonFlow agent and orchestrator images
         run: |
           git clone --depth 1 https://github.com/getaxonflow/axonflow.git /tmp/axonflow
           docker build -t ghcr.io/getaxonflow/axonflow-agent:latest \
             -f /tmp/axonflow/platform/agent/Dockerfile \
+            --build-arg EDITION=community \
+            /tmp/axonflow
+          # runtime-e2e/docker-compose.yml runs the orchestrator too: on AxonFlow
+          # v11 the agent proxies /api/v1/audit/tool-call to it, and without it
+          # the stack's audit route answers 502.
+          docker build -t ghcr.io/getaxonflow/axonflow-orchestrator:latest \
+            -f /tmp/axonflow/platform/orchestrator/Dockerfile \
             --build-arg EDITION=community \
             /tmp/axonflow
 
