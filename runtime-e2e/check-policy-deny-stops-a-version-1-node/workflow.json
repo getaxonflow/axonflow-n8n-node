@@ -1,9 +1,9 @@
 {
-  "name": "E2E: Check Policy deny is a branchable item",
+  "name": "E2E: Check Policy deny stops a version-1 node",
   "nodes": [
     {
       "parameters": {
-        "path": "e2e-check-policy-deny-is-a-branchable-item-workflow",
+        "path": "e2e-check-policy-deny-stops-a-version-1-node-workflow",
         "httpMethod": "POST",
         "responseMode": "onReceived"
       },
@@ -19,17 +19,16 @@
     {
       "parameters": {
         "operation": "checkPolicy",
-        "connectorType": "e2e-deny-branch",
+        "connectorType": "e2e-deny-v1",
         "statement": "rm -rf / --no-preserve-root",
         "mcpOperation": "execute",
         "parameters": "{}",
-        "idempotencyKey": "e2e-deny-branch-key",
         "failureMode": "closed"
       },
       "id": "2",
       "name": "AxonFlow Check Policy",
       "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
-      "typeVersion": 2,
+      "typeVersion": 1,
       "position": [
         300,
         300

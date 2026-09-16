@@ -14,8 +14,8 @@
 #   docker compose down -v
 #
 # No service has a container_name: the compose project is the identity, so two
-# stacks (two projects) can run on one machine. Host ports and the agent image
-# are variables whose defaults are the values CI uses; see README.md
+# stacks (two projects) can run on one machine. Host ports and the agent and
+# orchestrator images are variables whose defaults are the values CI uses; see README.md
 # "Running beside another stack".
 # Ports bind to 127.0.0.1 only: the database password below is public.
 

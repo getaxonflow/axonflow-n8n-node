@@ -234,22 +234,6 @@ n8n_wait_execution() {
   return 1
 }
 
-# Extract the output JSON of a named node from an execution.
-# Args: <execution_id> <node_name>
-# Returns: the output data JSON on stdout (first item of first output)
-n8n_node_output() {
-  local execution_id="$1"
-  local node_name="$2"
-  local result
-  result=$(n8n_get_execution "$execution_id")
-  echo "$result" | jq -r --arg nn "$node_name" '
-    .data.resultData.runData[$nn]
-      // [] | .[0].data.main
-      // [[]] | .[0]
-      // [] | .[0].json
-      // {}
-  '
-}
 
 # Delete a workflow.
 # Args: <workflow_id>
@@ -359,10 +343,10 @@ n8n_assert_installed_node_is_the_checkout() {
   local root built want_version want_sha got
   root="$(cd "$_N8N_LIB_DIR/../.." && pwd)"
   built="$root/dist/nodes/AxonFlow/AxonFlow.node.js"
-  if [ ! -f "$built" ]; then
-    (cd "$root" && npm run build) > "${WORK:-/tmp}/node-build-for-assertion.log" 2>&1 \
-      || { echo "  FATAL: could not build this checkout to compare with the installed node"; return 1; }
-  fi
+  # Always built: a dist left from another commit would compare the installed
+  # node with a build that is not this checkout.
+  (cd "$root" && npm run build) > "${WORK:-/tmp}/node-build-for-assertion.log" 2>&1 \
+    || { echo "  FATAL: could not build this checkout to compare with the installed node"; return 1; }
   want_version=$(jq -r '.version' "$root/package.json")
   want_sha=$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$built")
   got=$(docker compose -p "${COMPOSE_PROJECT_NAME:-runtime-e2e}" -f "$_N8N_LIB_DIR/../docker-compose.yml" exec -T n8n sh -c '

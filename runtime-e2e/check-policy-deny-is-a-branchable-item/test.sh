@@ -4,10 +4,12 @@
 # A statement a shipped control refuses (`rm -rf / --no-preserve-root`, the
 # Destructive Filesystem Operations control) goes through Check Policy inside
 # n8n, under Failure Mode Closed, into an IF node on {{ $json.allowed }}.
+# The AxonFlow node is typeVersion 2, whose On Deny default outputs the deny
+# as an item (a version-1 node stops instead: check-policy-deny-stops-a-version-1-node).
 #
-# AxonFlow answers that deny with HTTP 403. Before v11.1.0 the node threw
-# "Forbidden - perhaps check your credentials?" and the workflow stopped. This
-# leg asserts the deny is an ITEM:
+# AxonFlow answers that deny with HTTP 403. Before this change the node threw
+# n8n's "Forbidden - perhaps check your credentials?" on every platform since
+# AxonFlow v8, and the workflow stopped. This leg asserts the deny is an ITEM:
 #   - the execution succeeds;
 #   - the Check Policy item carries allowed: false, block_reason
 #     "explicit_constraint" and a decision_id;
@@ -19,7 +21,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
-export WORK="${WORK:-/tmp}"
+# A leg run on its own gets a private directory: /tmp is shared by every run.
+export WORK="${WORK:-$(mktemp -d)}"
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"

@@ -10,7 +10,8 @@
 #     execution must END IN ERROR with the node's edition message, word for
 #     word. Any other outcome fails.
 #   Enterprise: the execution must SUCCEED with an item carrying an
-#     approval_id, and hitl_approval_queue must hold exactly that row.
+#     approval_id (the request_id UUID, which GET /api/v1/hitl/queue/{id}
+#     takes), and hitl_approval_queue must hold exactly that request_id.
 #
 # This leg used to pass on success AND on error, so it asserted nothing.
 #
@@ -22,7 +23,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
 AGENT_URL="${AGENT_URL:-http://localhost:18080}"
-export WORK="${WORK:-/tmp}"
+# A leg run on its own gets a private directory: /tmp is shared by every run.
+export WORK="${WORK:-$(mktemp -d)}"
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
@@ -110,7 +112,7 @@ else
     FAILS=1
   else
     ROWS=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc \
-      "SELECT count(*) FROM hitl_approval_queue WHERE id::text = '$APPROVAL_ID'")
+      "SELECT count(*) FROM hitl_approval_queue WHERE request_id::text = '$APPROVAL_ID'")
     if [ "$ROWS" = "1" ]; then
       echo "OK: hitl_approval_queue holds the row $APPROVAL_ID"
     else

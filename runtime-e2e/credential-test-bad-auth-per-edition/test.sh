@@ -24,7 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
 AGENT_URL="${AGENT_URL:-http://localhost:18080}"
-export WORK="${WORK:-/tmp}"
+# A leg run on its own gets a private directory: /tmp is shared by every run.
+export WORK="${WORK:-$(mktemp -d)}"
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner

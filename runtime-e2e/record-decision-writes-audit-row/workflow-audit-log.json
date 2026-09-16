@@ -26,7 +26,6 @@
         "auditOutput": "{}",
         "auditSuccess": false,
         "auditErrorMessage": "downstream timeout",
-        "idempotencyKey": "e2e-audit-log-fixed-key",
         "failureMode": "closed"
       },
       "id": "2",

@@ -20,15 +20,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
 AGENT_URL="${AGENT_URL:-http://localhost:18080}"
-export WORK="${WORK:-/tmp}"
+# A leg run on its own gets a private directory: /tmp is shared by every run.
+export WORK="${WORK:-$(mktemp -d)}"
 
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
+DB_NAME="${DB_NAME:-axonflow}"
+DB_USER="${DB_USER:-axonflow}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-runtime-e2e}"
 # The agent is stopped and started by compose service name within this project,
 # never by container name, so a sibling stack's agent is never touched.
 agent_compose() { docker compose -p "$COMPOSE_PROJECT_NAME" -f "$SCRIPT_DIR/../docker-compose.yml" "$@"; }
+# Whatever ends this leg (a failed assertion, a timeout under set -e), the agent
+# it stopped is started again, so the next leg does not fail on a dead agent.
+AGENT_STOPPED=false
+restart_agent_if_stopped() {
+  if [ "$AGENT_STOPPED" = "true" ]; then
+    agent_compose start axonflow-agent >/dev/null 2>&1 || true
+    AGENT_STOPPED=false
+  fi
+}
+trap restart_agent_if_stopped EXIT
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner
@@ -40,7 +53,7 @@ WEBHOOK_PATH_OPEN="e2e-failure-mode-open-vs-closed-workflow-open"
 WEBHOOK_PATH_CLOSED="e2e-failure-mode-open-vs-closed-workflow-closed"
 
 # SETUP: clean prior test rows
-psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
   -c "DELETE FROM mcp_query_audits WHERE connector_name LIKE 'e2e-failure-mode%'" 2>/dev/null || true
 
 # 1. Create AxonFlow credential (points to in-compose agent at http://axonflow-agent:8080)
@@ -115,6 +128,7 @@ echo "OK: fail-closed workflow succeeded with agent UP"
 echo ""
 echo "--- Phase 2: Stopping axonflow-agent container ---"
 agent_compose stop axonflow-agent
+AGENT_STOPPED=true
 
 # Wait for port to be truly unreachable
 for i in $(seq 1 15); do
@@ -141,7 +155,6 @@ if [ "$STATUS_OPEN2" != "success" ]; then
   echo "FAIL: fail-open workflow should succeed even when agent is DOWN (got $STATUS_OPEN2)"
   echo "Fail-open means the workflow continues with a fallback payload."
   n8n_get_execution "$EXEC_OPEN2" | jq '.' 2>/dev/null || true
-  agent_compose start axonflow-agent
   exit 1
 fi
 echo "OK: fail-open workflow succeeded with agent DOWN"
@@ -165,7 +178,6 @@ ITEM_FAILS=0
 [ "$(printf '%s' "$OPEN2_ITEM" | jq -r 'has("allowed")')" = "false" ] \
   || { echo "FAIL: the fail-open item carries an allowed key; a saved IF on \$json.allowed would change branch"; ITEM_FAILS=1; }
 if [ "$ITEM_FAILS" -ne 0 ]; then
-  agent_compose start axonflow-agent
   exit 1
 fi
 echo "OK: fail-open item carries _axonflow_unreachable, governance=unavailable, cause=no_response, and no allowed key"
@@ -184,10 +196,12 @@ n8n_wait_execution "$EXEC_CLOSED2" 30
 STATUS_CLOSED2=$(n8n_execution_status "$EXEC_CLOSED2")
 echo "Fail-closed status (agent DOWN): $STATUS_CLOSED2"
 
-if [ "$STATUS_CLOSED2" = "success" ]; then
-  echo "FAIL: fail-closed workflow should NOT succeed when agent is DOWN"
-  n8n_get_execution "$EXEC_CLOSED2" | jq '.' 2>/dev/null || true
-  agent_compose start axonflow-agent
+# Fail-closed means the execution ENDED IN ERROR, with the node's own error:
+# not success, and not unknown / crashed / waiting.
+CLOSED2_ERROR=$(n8n_node_error "$EXEC_CLOSED2" "AxonFlow Fail Closed")
+echo "Fail-closed node error (agent DOWN): ${CLOSED2_ERROR:-(none)}"
+if [ "$STATUS_CLOSED2" != "error" ] || [ -z "$CLOSED2_ERROR" ]; then
+  echo "FAIL: fail-closed workflow should end in error with the AxonFlow node's error when the agent is DOWN (status=$STATUS_CLOSED2)"
   exit 1
 fi
 echo "OK: fail-closed workflow errored with agent DOWN (status=$STATUS_CLOSED2)"
@@ -197,6 +211,7 @@ echo "OK: fail-closed workflow errored with agent DOWN (status=$STATUS_CLOSED2)"
 echo ""
 echo "Restarting axonflow-agent container..."
 agent_compose start axonflow-agent
+AGENT_STOPPED=false
 
 echo "Waiting for agent to be healthy..."
 for i in $(seq 1 60); do
@@ -212,7 +227,7 @@ for i in $(seq 1 60); do
 done
 
 # CLEANUP: remove test rows and workflows
-psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
   -c "DELETE FROM mcp_query_audits WHERE connector_name LIKE 'e2e-failure-mode%'" 2>/dev/null || true
 n8n_delete_workflow "$WF_OPEN_ID"
 n8n_delete_workflow "$WF_CLOSED_ID"

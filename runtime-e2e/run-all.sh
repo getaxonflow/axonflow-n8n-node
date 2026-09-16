@@ -46,8 +46,7 @@ done
 export AGENT_URL N8N_URL DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD COMPOSE_PROJECT_NAME
 export PGPASSWORD="$DB_PASSWORD"
 
-WORK="/tmp/n8n-node-e2e-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$WORK"
+WORK="$(mktemp -d "/tmp/n8n-node-e2e-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
 export WORK
 
 # --- Results tracking ---
@@ -177,6 +176,7 @@ main() {
   run_probe "n8n-can-install-the-node"
   run_probe "check-policy-operation-hits-axonflow"
   run_probe "check-policy-deny-is-a-branchable-item"
+  run_probe "check-policy-deny-stops-a-version-1-node"
   run_probe "record-decision-writes-audit-row"
   run_probe "wait-for-approval-creates-queue-row"
   run_probe "idempotency-retry-does-not-double-record"
