@@ -20,3 +20,5 @@ v=$(cmd | grep --max-count=1 two)           # EXPECT
 cmd |                                       # EXPECT
   grep -q two
 echo "$(cmd | grep -L two)"                 # EXPECT
+cmd |                                       # EXPECT
+  sort | grep -q two
