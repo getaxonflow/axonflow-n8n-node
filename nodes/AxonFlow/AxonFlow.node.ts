@@ -43,7 +43,10 @@ export class AxonFlow implements INodeType {
 		name: 'axonFlow',
 		icon: 'file:axonflow.svg',
 		group: ['transform'],
-		version: 1,
+		// Version 2 changes one default: On Deny outputs an item. Saved nodes stay
+		// version 1, where a deny still stops the workflow (see onDeny).
+		version: [1, 2],
+		defaultVersion: 2,
 		subtitle: '={{ $parameter["operation"] }}',
 		description: 'AxonFlow API integration — call policy and HITL endpoints from your workflow.',
 		defaults: {
@@ -119,6 +122,55 @@ export class AxonFlow implements INodeType {
 				default: 'open',
 				description:
 					'On network errors / 5xx responses from AxonFlow. Open matches the AxonFlow ADK plugin default — the workflow proceeds with a structured fallback payload so the underlying action is not held hostage by an AxonFlow outage. Closed re-throws and stops the workflow; choose this for high-stakes flows where you would rather fail than skip the policy check.',
+			},
+
+			// ─── checkPolicy: On Deny, one default per node version ───────────────
+			// A deny (AxonFlow's HTTP 403 with allowed: false) always stopped a
+			// version-1 node, because n8n threw on every 403. A saved workflow with
+			// no IF after Check Policy relied on that to never reach its action, so
+			// version 1 keeps stopping; version 2, for nodes created from now on,
+			// outputs the deny as an item to branch on.
+			{
+				displayName: 'On Deny',
+				name: 'onDeny',
+				type: 'options',
+				options: [
+					{
+						name: 'Output an Item to Branch On',
+						value: 'output',
+						description:
+							'Emit the decision (allowed: false, block_reason, decision_id) as the output item. Add an IF on allowed before any action.',
+					},
+					{
+						name: 'Stop the Workflow With an Error',
+						value: 'error',
+						description: 'Fail this node with an error that names the reason and the decision ID',
+					},
+				],
+				default: 'error',
+				displayOptions: { show: { operation: ['checkPolicy'], '@version': [1] } },
+				description: 'What the node does when AxonFlow denies the request',
+			},
+			{
+				displayName: 'On Deny',
+				name: 'onDeny',
+				type: 'options',
+				options: [
+					{
+						name: 'Output an Item to Branch On',
+						value: 'output',
+						description:
+							'Emit the decision (allowed: false, block_reason, decision_id) as the output item. Add an IF on allowed before any action.',
+					},
+					{
+						name: 'Stop the Workflow With an Error',
+						value: 'error',
+						description: 'Fail this node with an error that names the reason and the decision ID',
+					},
+				],
+				default: 'output',
+				displayOptions: { show: { operation: ['checkPolicy'], '@version': [2] } },
+				description: 'What the node does when AxonFlow denies the request',
 			},
 
 			// ─── checkPolicy ────────────────────────────────────────────────
@@ -338,9 +390,17 @@ export class AxonFlow implements INodeType {
 			// The fallback applies to an EMPTY value too: the declared default is ''
 			// (see the Idempotency Key note), and getNodeParameter's own fallback
 			// covers only an undefined parameter.
-			const idempotencyKey =
-				(this.getNodeParameter('idempotencyKey', i, '') as string) ||
-				defaultIdempotencyKey(this.getExecutionId(), i, this.getNode().name);
+			const explicitKey = this.getNodeParameter('idempotencyKey', i, '') as string;
+			const runIndex = Number((this.getWorkflowDataProxy(i) as { $runIndex?: number }).$runIndex) || 0;
+			const keyFor = (body: IDataObject): string =>
+				explicitKey || defaultIdempotencyKey(this.getExecutionId(), i, runIndex, this.getNode().name, body);
+			// Read per item so an expression can set it; the fallback is the default
+			// of this node's version.
+			const onDeny = (
+				operation === 'checkPolicy'
+					? this.getNodeParameter('onDeny', i, (this.getNode().typeVersion ?? 1) >= 2 ? 'output' : 'error')
+					: 'error'
+			) as 'output' | 'error';
 			const failureMode = this.getNodeParameter('failureMode', i, 'open') as
 				| 'open'
 				| 'closed';
@@ -349,7 +409,19 @@ export class AxonFlow implements INodeType {
 				let result: IDataObject;
 
 				switch (operation) {
-					case 'checkPolicy':
+					case 'checkPolicy': {
+						const body: IDataObject = {
+							client_id: clientId,
+							// No user_token: the credential's "User Token" is the client
+							// secret, and it travels only in the Authorization header.
+							tenant_id: clientId,
+							connector_type: this.getNodeParameter('connectorType', i) as string,
+							statement: this.getNodeParameter('statement', i) as string,
+							operation: this.getNodeParameter('mcpOperation', i) as string,
+							parameters: parseJsonParam(
+								this.getNodeParameter('parameters', i, '{}') as string | object,
+							),
+						};
 						result = await callAxonFlow(
 							this,
 							operation,
@@ -357,26 +429,41 @@ export class AxonFlow implements INodeType {
 								endpoint,
 								method: 'POST',
 								path: '/api/v1/mcp/check-input',
-								idempotencyKey,
+								idempotencyKey: keyFor(body),
 								pepHandshake,
-								body: {
-									client_id: clientId,
-									// No user_token: the credential's "User Token" is the client
-									// secret, and it travels only in the Authorization header.
-									tenant_id: clientId,
-									connector_type: this.getNodeParameter('connectorType', i) as string,
-									statement: this.getNodeParameter('statement', i) as string,
-									operation: this.getNodeParameter('mcpOperation', i) as string,
-									parameters: parseJsonParam(
-										this.getNodeParameter('parameters', i, '{}') as string | object,
-									),
-								},
+								body,
 							}),
+							onDeny,
 						);
 						break;
+					}
 
 					case 'recordDecision':
-					case 'auditLog':
+					case 'auditLog': {
+						const body: IDataObject = {
+							tool_name: this.getNodeParameter('toolName', i) as string,
+							// Client identity. `caller_name` is the current field; `tool_type`
+							// is the deprecated fallback the platform still honors (precedence:
+							// caller_name > tool_type > default). Dual-send both during the
+							// deprecation window so attribution is correct on platforms with
+							// caller_name support (v9.11.0+) and unchanged on older ones.
+							caller_name: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
+							tool_type: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
+							// No user_id: the credential secret is never a user id, and
+							// n8n has no end-user identity to put there.
+							workflow_id: this.getNodeParameter('workflowId', i) as string,
+							step_id:
+								(this.getNodeParameter('stepId', i, '') as string) ||
+								this.getNode().name,
+							input: parseJsonParam(
+								this.getNodeParameter('auditInput', i, '{}') as string | object,
+							),
+							output: parseJsonParam(
+								this.getNodeParameter('auditOutput', i, '{}') as string | object,
+							),
+							success: this.getNodeParameter('auditSuccess', i) as boolean,
+							error_message: this.getNodeParameter('auditErrorMessage', i, '') as string,
+						};
 						result = await callAxonFlow(
 							this,
 							operation,
@@ -384,34 +471,13 @@ export class AxonFlow implements INodeType {
 								endpoint,
 								method: 'POST',
 								path: '/api/v1/audit/tool-call',
-								idempotencyKey,
-								body: {
-									tool_name: this.getNodeParameter('toolName', i) as string,
-									// Client identity. `caller_name` is the current field; `tool_type`
-									// is the deprecated fallback the platform still honors (precedence:
-									// caller_name > tool_type > default). Dual-send both during the
-									// deprecation window so attribution is correct on platforms with
-									// caller_name support (v9.11.0+) and unchanged on older ones.
-									caller_name: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
-									tool_type: operation === 'auditLog' ? 'n8n_audit' : 'n8n_decision',
-									// No user_id: the credential secret is never a user id, and
-									// n8n has no end-user identity to put there.
-									workflow_id: this.getNodeParameter('workflowId', i) as string,
-									step_id:
-										(this.getNodeParameter('stepId', i, '') as string) ||
-										this.getNode().name,
-									input: parseJsonParam(
-										this.getNodeParameter('auditInput', i, '{}') as string | object,
-									),
-									output: parseJsonParam(
-										this.getNodeParameter('auditOutput', i, '{}') as string | object,
-									),
-									success: this.getNodeParameter('auditSuccess', i) as boolean,
-									error_message: this.getNodeParameter('auditErrorMessage', i, '') as string,
-								},
+								idempotencyKey: keyFor(body),
+								body,
 							}),
+							onDeny,
 						);
 						break;
+					}
 
 					case 'waitForApproval': {
 						const limitWaitTime = this.getNodeParameter('limitWaitTime', i) as number;
@@ -443,9 +509,10 @@ export class AxonFlow implements INodeType {
 								endpoint,
 								method: 'POST',
 								path: '/api/v1/hitl/queue',
-								idempotencyKey,
+								idempotencyKey: keyFor(hitlBody),
 								body: hitlBody,
 							}),
+							onDeny,
 						);
 
 						const approvalData = extractApprovalData(createResp, this.getNode());
@@ -457,7 +524,11 @@ export class AxonFlow implements INodeType {
 						// to that URL automatically. For n8n, point notify_url at a
 						// Wait node webhook URL.
 						result = {
-							approval_id: approvalData.id,
+							// The request UUID, which GET /api/v1/hitl/queue/{id} takes. The
+							// queue answers data.id as the integer row id, which that route
+							// does not accept, so request_id is preferred when present.
+							approval_id: approvalData.request_id ?? approvalData.id,
+							request_id: approvalData.request_id,
 							status: approvalData.status ?? 'pending',
 							expires_at: approvalData.expires_at,
 							resume_hint:
@@ -585,23 +656,38 @@ const IDEMPOTENCY_KEY_INVALID = /[^A-Za-z0-9_.:\-/]/g;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
 
 /**
- * `<execution id>-<item index>-<node name>`, made a key the platform accepts.
+ * `<execution id>-<item index>-<run index>-<node name>-<request hash>`, made a
+ * key the platform accepts.
  *
- * A node name is free text ("AxonFlow Check Policy"), so each character
- * outside the platform's alphabet becomes `_`. When anything was replaced or
- * cut to fit 256 characters, a hash of the original name is appended, so two
- * names that differ only there still get different keys. A valid name that
- * fits is used unchanged, which keeps every existing default key as it was.
+ * The run index and the hash of the request body are there because AxonFlow
+ * replays a stored answer for a repeated key WITHOUT comparing bodies: inside a
+ * loop, one node sees the same execution id and item index on every iteration,
+ * so a key without them would hand iteration 2 the decision made for iteration
+ * 1's statement. A retry of the same call (same run, same body) keeps its key
+ * and is still deduplicated.
+ *
+ * A node name is free text ("AxonFlow Check Policy"), so each character outside
+ * the platform's alphabet becomes `_`, and when anything was replaced a hash of
+ * the original name follows it, so two names that differ only there still get
+ * different keys. A name already inside the alphabet is used as it is. A key
+ * longer than 256 characters is cut and ends with a hash of the whole key.
  */
-function defaultIdempotencyKey(executionId: string, itemIndex: number, nodeName: string): string {
-	const prefix = `${String(executionId).replace(IDEMPOTENCY_KEY_INVALID, '_')}-${itemIndex}-`;
+function defaultIdempotencyKey(
+	executionId: string,
+	itemIndex: number,
+	runIndex: number,
+	nodeName: string,
+	body: IDataObject,
+): string {
 	const safe = nodeName.replace(IDEMPOTENCY_KEY_INVALID, '_');
-	const room = MAX_IDEMPOTENCY_KEY_LENGTH - prefix.length;
-	if (safe === nodeName && safe.length <= room) {
-		return prefix + safe;
+	const name = safe === nodeName ? safe : `${safe}-${fnv1a32(nodeName)}`;
+	const execution = String(executionId).replace(IDEMPOTENCY_KEY_INVALID, '_');
+	const key = `${execution}-${itemIndex}-${runIndex}-${name}-${fnv1a32(JSON.stringify(body))}`;
+	if (key.length <= MAX_IDEMPOTENCY_KEY_LENGTH) {
+		return key;
 	}
-	const suffix = `-${fnv1a32(nodeName)}`;
-	return prefix + safe.slice(0, Math.max(0, room - suffix.length)) + suffix;
+	const suffix = `-${fnv1a32(key)}`;
+	return key.slice(0, MAX_IDEMPOTENCY_KEY_LENGTH - suffix.length) + suffix;
 }
 
 /** FNV-1a over UTF-16 code units, as 8 hex digits. Not a security hash. */
@@ -621,32 +707,40 @@ async function callAxonFlow(
 	ctx: IExecuteFunctions,
 	operation: string,
 	request: IHttpRequestOptions,
+	onDeny: 'output' | 'error',
 ): Promise<IDataObject> {
 	const response = (await ctx.helpers.httpRequestWithAuthentication.call(
 		ctx,
 		'axonFlowApi',
 		request,
 	)) as unknown;
-	return interpretResponse(ctx.getNode(), operation, response);
+	return interpretResponse(ctx.getNode(), operation, response, onDeny);
 }
 
 /**
  * The ONE place a status and a body become a result or an error.
  *
  * - 2xx: the body, verbatim.
- * - Check Policy, 403 carrying `allowed: false`: a policy deny (the spec's
- *   "Input blocked by policy", body MCPCheckInputResponse). Returned as the
- *   item, verbatim, so a downstream IF branches on `allowed` and reads
- *   `block_reason`, which carries an `unknown_constraint` or
- *   `approval_required` refusal in full. A 403 WITHOUT `allowed: false` is not
- *   a decision: a tier-feature limit answers 403 with the rate-limit envelope.
+ * - Check Policy, a body carrying `allowed: false` (on AxonFlow v8 and later
+ *   an HTTP 403, the spec's "Input blocked by policy"): a policy deny. With On
+ *   Deny "output" it is the item, verbatim, so a downstream IF branches on
+ *   `allowed` and reads `block_reason` (an `unknown_constraint` or
+ *   `approval_required` refusal in full); with "error" the node stops with an
+ *   error naming the reason and the decision. A 403 WITHOUT `allowed: false`
+ *   is not a decision: a tier-feature limit answers 403 with the rate-limit
+ *   envelope.
  * - Every other status is an error that names its cause and quotes the
  *   platform: 401 the credential, 402 a tier limit, 429 a rate limit (with
  *   `limit_type` and `resets_at` when the envelope carries them), 404 on the
  *   approval queue the edition, 5xx a platform fault. Only a 5xx is swallowable
  *   by `shouldFailOpen`; every 4xx is rethrown under either failure mode.
  */
-function interpretResponse(node: INode, operation: string, response: unknown): IDataObject {
+function interpretResponse(
+	node: INode,
+	operation: string,
+	response: unknown,
+	onDeny: 'output' | 'error',
+): IDataObject {
 	if (!isObject(response) || typeof response.statusCode !== 'number') {
 		throw new NodeOperationError(
 			node,
@@ -664,12 +758,35 @@ function interpretResponse(node: INode, operation: string, response: unknown): I
 				`AxonFlow answered HTTP ${status} without a JSON object body, so the node cannot read a result from it.`,
 			);
 		}
+		if (operation === 'checkPolicy' && body.allowed === false && onDeny === 'error') {
+			throw denyError(node, status, body);
+		}
 		return body as IDataObject;
 	}
 	if (operation === 'checkPolicy' && status === 403 && isObject(body) && body.allowed === false) {
+		if (onDeny === 'error') {
+			throw denyError(node, status, body);
+		}
 		return body as IDataObject;
 	}
 	throw platformError(node, operation, status, body, full.headers ?? {});
+}
+
+/**
+ * On Deny "error": `AxonFlow denied the request: <block_reason> (decision
+ * <id>)`. It carries the HTTP status as its code, so a version-1 workflow sees
+ * a failed node on a deny exactly as before, now with the reason in words.
+ */
+function denyError(node: INode, status: number, body: Record<string, unknown>): NodeApiError {
+	const reason = typeof body.block_reason === 'string' ? cleanText(body.block_reason) : '';
+	const decision = typeof body.decision_id === 'string' ? cleanText(body.decision_id) : '';
+	const message = `AxonFlow denied the request: ${reason || 'no reason given'}${decision ? ` (decision ${decision})` : ''}`;
+	const error = new NodeApiError(node, { httpCode: String(status) } as JsonObject, {
+		message,
+		httpCode: String(status),
+	});
+	error.message = message;
+	return error;
 }
 
 function platformError(
@@ -682,8 +799,12 @@ function platformError(
 	const said = platformText(body);
 	const limit = limitDetails(body, headers);
 	let message: string;
-	if (status === 401) {
-		message = `AxonFlow rejected the credential (HTTP 401): ${said}. Check the Client ID and User Token of the AxonFlow API credential.`;
+	if (status === 401 && said.includes('user_token_required')) {
+		// The organization requires a per-user token, which this node never
+		// sends: the credential is not what is wrong.
+		message = `AxonFlow refused the request (HTTP 401): this organization requires a per-user token, which the n8n node does not send: ${said}`;
+	} else if (status === 401) {
+		message = `AxonFlow rejected the credential (HTTP 401): ${said.replace(/\.+$/, '')}. Check the Client ID and User Token of the AxonFlow API credential.`;
 	} else if (status === 402) {
 		// Not in the published spec for check-input (axonflow-enterprise#4249,
 		// comment 5682255301); answered when a tier limit refuses the principal.
@@ -691,11 +812,11 @@ function platformError(
 	} else if (status === 429) {
 		message = `AxonFlow refused the request: a rate limit was reached (HTTP 429${limit}): ${said}`;
 	} else if (status === 404 && operation === 'waitForApproval') {
-		message = `AxonFlow has no approval queue at this endpoint (HTTP 404): /api/v1/hitl/queue is served by AxonFlow Enterprise only, so a Community deployment cannot create an approval request: ${said}`;
+		message = `AxonFlow has no approval queue at this endpoint (HTTP 404): /api/v1/hitl/queue is served by AxonFlow Enterprise only, so a Community deployment cannot create an approval request (on Enterprise, check that the Endpoint is the AxonFlow agent): ${said}`;
 	} else if (status === 403 && operation === 'checkPolicy' && isObject(body) && body.allowed === true) {
 		message = `AxonFlow answered HTTP 403 with allowed: true, which is not a decision the node can act on, so the request is treated as refused: ${said}`;
 	} else if (status >= 400 && status < 500 && isObject(body) && typeof body.limit_type === 'string') {
-		message = `AxonFlow refused the request: a tier limit was reached (HTTP ${status}${limit}): ${said}`;
+		message = `AxonFlow refused the request: a limit was reached (HTTP ${status}${limit}): ${said}`;
 	} else if (status >= 500 && status < 600) {
 		message = `AxonFlow failed to process the request (HTTP ${status}): ${said}`;
 	} else {
@@ -801,9 +922,9 @@ function unreachableCause(error: unknown): string {
  *     workflow run un-governed and never surface to the user.
  *
  * An HTTP status reaches here as the `NodeApiError` that `interpretResponse`
- * built, with the code on `error.httpCode` (string). A transport failure is
- * n8n's own error, with no code. `error.context?.statusCode` (number) is probed
- * too, the shape n8n's own status errors have carried.
+ * built, with the code on `error.httpCode` (a numeric string). A transport
+ * failure is n8n's own error, whose httpCode is absent or a Node error code
+ * such as `ECONNREFUSED`, which is not a number.
  */
 function shouldFailOpen(error: unknown): boolean {
 	if (error instanceof NodeOperationError) return false;
@@ -821,9 +942,8 @@ function shouldFailOpen(error: unknown): boolean {
 }
 
 function httpCodeOf(error: unknown): number | undefined {
-	const err = error as { httpCode?: string | number | null; context?: { statusCode?: number } };
-	const raw = typeof err.httpCode === 'string' ? parseInt(err.httpCode, 10) : err.httpCode;
-	const code = typeof raw === 'number' ? raw : err.context?.statusCode;
+	const err = error as { httpCode?: string | number | null };
+	const code = typeof err.httpCode === 'string' ? parseInt(err.httpCode, 10) : err.httpCode;
 	return typeof code === 'number' && !Number.isNaN(code) ? code : undefined;
 }
 
@@ -856,7 +976,7 @@ function parseJsonParam(value: string | object): IDataObject {
 function extractApprovalData(
 	resp: IDataObject,
 	node: INode,
-): { id?: string; status?: string; expires_at?: string } {
+): { id?: string | number; request_id?: string; status?: string; expires_at?: string } {
 	const inner = resp.data as IDataObject | undefined;
 	if (!inner || typeof inner !== 'object') {
 		throw new NodeOperationError(
@@ -866,7 +986,8 @@ function extractApprovalData(
 		);
 	}
 	return {
-		id: (inner.id as string | undefined) ?? (inner.approval_id as string | undefined),
+		id: (inner.id as string | number | undefined) ?? (inner.approval_id as string | undefined),
+		request_id: typeof inner.request_id === 'string' ? inner.request_id : undefined,
 		status: inner.status as string | undefined,
 		expires_at: inner.expires_at as string | undefined,
 	};

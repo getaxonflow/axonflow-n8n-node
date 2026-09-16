@@ -69,9 +69,11 @@ interface Run {
 	params: Json;
 	response: WireResponse | Error;
 	continueOnFail?: boolean;
+	/** The node version; 2 (a node created now) unless a test says otherwise. */
+	typeVersion?: number;
 }
 
-async function run({ params, response, continueOnFail = false }: Run) {
+async function run({ params, response, continueOnFail = false, typeVersion = 2 }: Run) {
 	const requests: Json[] = [];
 	const ctx = {
 		getInputData: () => [{ json: {} }],
@@ -85,7 +87,8 @@ async function run({ params, response, continueOnFail = false }: Run) {
 			if (fallback !== undefined) return fallback;
 			throw new Error(`parameter not provided in fixture: ${name}`);
 		},
-		getNode: () => ({ name: 'AxonFlow1' }),
+		getNode: () => ({ name: 'AxonFlow1', typeVersion }),
+		getWorkflowDataProxy: () => ({ $runIndex: 0 }),
 		getExecutionId: () => 'exec-1',
 		continueOnFail: () => continueOnFail,
 		helpers: {
@@ -187,7 +190,7 @@ test('checkPolicy 403 with the rate-limit envelope (feature_pro_only) is a tier 
 	const err = await errorOf({ params: CHECK_POLICY, response: wire(403, FEATURE_PRO_ONLY_403) });
 	assert.equal(
 		err.message,
-		'AxonFlow refused the request: a tier limit was reached (HTTP 403, limit_type "feature_pro_only"): this feature requires the Pro tier',
+		'AxonFlow refused the request: a limit was reached (HTTP 403, limit_type "feature_pro_only"): LLM cost pre-flight is a Pro feature — see what a multi-step plan will cost before it runs.',
 	);
 });
 
@@ -257,7 +260,7 @@ for (const failureMode of ['open', 'closed']) {
 		});
 		assert.equal(
 			err.message,
-			'AxonFlow refused the request: a rate limit was reached (HTTP 429, limit_type "daily_quota", resets at 2026-09-17T00:00:00Z, retry after 3600 s): daily request quota exceeded',
+			'AxonFlow refused the request: a rate limit was reached (HTTP 429, limit_type "daily_quota", resets at 2026-09-17T00:00:00Z, retry after 3600 s): Daily request limit reached. Resets at midnight UTC.',
 		);
 		assert.equal(err.httpCode, '429', 'n8n Retry On Fail observes the status');
 	});
@@ -267,13 +270,13 @@ test('429 WITHOUT the envelope (a per-minute limit) names the limit and the Retr
 	const err = await errorOf({ params: CHECK_POLICY, response: wire(429, PER_MINUTE_429, { 'retry-after': '60' }) });
 	assert.equal(
 		err.message,
-		'AxonFlow refused the request: a rate limit was reached (HTTP 429, retry after 60 s): rate limit exceeded',
+		'AxonFlow refused the request: a rate limit was reached (HTTP 429, retry after 60 s): Rate limit exceeded (60 req/min). Try again shortly.',
 	);
 });
 
 test('429 with neither envelope nor Retry-After is still named a rate limit', async () => {
 	const err = await errorOf({ params: CHECK_POLICY, response: wire(429, PER_MINUTE_429) });
-	assert.equal(err.message, 'AxonFlow refused the request: a rate limit was reached (HTTP 429): rate limit exceeded');
+	assert.equal(err.message, 'AxonFlow refused the request: a rate limit was reached (HTTP 429): Rate limit exceeded (60 req/min). Try again shortly.');
 });
 
 test('429 with a MALFORMED resets_at quotes it and marks it, and ignores a non-string limit_type', async () => {
@@ -329,7 +332,7 @@ test('waitForApproval 404 names the edition', async () => {
 	const err = await errorOf({ params: WAIT_FOR_APPROVAL, response: wire(404, HITL_QUEUE_404) });
 	assert.equal(
 		err.message,
-		`AxonFlow has no approval queue at this endpoint (HTTP 404): /api/v1/hitl/queue is served by AxonFlow Enterprise only, so a Community deployment cannot create an approval request: not_found: ${HITL_QUEUE_404.error_description}`,
+		`AxonFlow has no approval queue at this endpoint (HTTP 404): /api/v1/hitl/queue is served by AxonFlow Enterprise only, so a Community deployment cannot create an approval request (on Enterprise, check that the Endpoint is the AxonFlow agent): not_found: ${HITL_QUEUE_404.error_description}`,
 	);
 });
 
@@ -380,7 +383,8 @@ test('a helper that ignores returnFullResponse (a bare body) is refused, never r
 		getCredentials: async () => ({ endpoint: 'https://axonflow.local', clientId: 'c', userToken: 't' }),
 		getNodeParameter: (name: string, _i: number, fallback?: unknown) =>
 			name in CHECK_POLICY ? (CHECK_POLICY as Json)[name] : fallback,
-		getNode: () => ({ name: 'AxonFlow1' }),
+		getNode: () => ({ name: 'AxonFlow1', typeVersion: 2 }),
+		getWorkflowDataProxy: () => ({ $runIndex: 0 }),
 		getExecutionId: () => 'exec-1',
 		continueOnFail: () => false,
 		helpers: { httpRequestWithAuthentication: async () => ({ allowed: true }) },
@@ -423,7 +427,7 @@ test('saved workflows: every parameter the shipped example and the runtime legs 
 	assert.ok(checked >= 7, `expected the example's four nodes and the legs' nodes, checked ${checked}`);
 });
 
-test('saved workflows: the operation values and the unreachable item key are unchanged', () => {
+test('saved workflows: the operation values are unchanged', () => {
 	const values = (new AxonFlow().description.properties.find((p) => p.name === 'operation')?.options ?? []).map(
 		(o) => (o as { value: string }).value,
 	);
@@ -445,14 +449,15 @@ test('Wait for Approval copy says what the operation does on v11: creates a requ
 // platform/shared/idempotency/store.go: ^[A-Za-z0-9_.:\-/]+$, at most 256.
 const PLATFORM_KEY = /^[A-Za-z0-9_.:\-/]+$/;
 
-async function defaultKeyFor(nodeName: string, executionId = '12345'): Promise<string> {
+async function defaultKeyFor(nodeName: string, executionId = '12345', runIndex = 0, statement = CHECK_POLICY.statement): Promise<string> {
 	const requests: Json[] = [];
 	const ctx = {
 		getInputData: () => [{ json: {} }],
 		getCredentials: async () => ({ endpoint: 'https://axonflow.local', clientId: 'c', userToken: 't' }),
 		getNodeParameter: (name: string, _i: number, fallback?: unknown) =>
-			name in CHECK_POLICY && name !== 'idempotencyKey' ? (CHECK_POLICY as Json)[name] : fallback,
-		getNode: () => ({ name: nodeName }),
+			name === 'statement' ? statement : name in CHECK_POLICY && name !== 'idempotencyKey' ? (CHECK_POLICY as Json)[name] : fallback,
+		getNode: () => ({ name: nodeName, typeVersion: 2 }),
+		getWorkflowDataProxy: () => ({ $runIndex: runIndex }),
 		getExecutionId: () => executionId,
 		continueOnFail: () => false,
 		helpers: {
@@ -467,40 +472,59 @@ async function defaultKeyFor(nodeName: string, executionId = '12345'): Promise<s
 	return (requests[0].headers as Record<string, string>)['Idempotency-Key'];
 }
 
-test('default key: a valid node name is used unchanged (existing default keys do not move)', async () => {
-	assert.equal(await defaultKeyFor('AxonFlow'), '12345-0-AxonFlow');
-	assert.equal(await defaultKeyFor('Node_1.v2:a/b-c'), '12345-0-Node_1.v2:a/b-c');
+const H = '[0-9a-f]{8}';
+
+test('default key: <execution>-<item>-<run>-<name>-<request hash>; a valid node name is used unchanged', async () => {
+	assert.match(await defaultKeyFor('AxonFlow'), new RegExp(`^12345-0-0-AxonFlow-${H}$`));
+	assert.match(await defaultKeyFor('Node_1.v2:a/b-c'), new RegExp(`^12345-0-0-Node_1\\.v2:a/b-c-${H}$`));
 });
 
-test('default key: a name with spaces and parentheses becomes a key the platform accepts, with a hash', async () => {
+test('default key: a name with spaces and parentheses becomes a key the platform accepts, with a hash of the name', async () => {
 	const key = await defaultKeyFor('AxonFlow Record (Idempotent)');
 	assert.match(key, PLATFORM_KEY);
-	assert.match(key, /^12345-0-AxonFlow_Record__Idempotent_-[0-9a-f]{8}$/);
+	assert.match(key, new RegExp(`^12345-0-0-AxonFlow_Record__Idempotent_-${H}-${H}$`));
 });
 
 test('default key: two names that differ only in a replaced character get different keys', async () => {
 	const a = await defaultKeyFor('Check Policy');
 	const b = await defaultKeyFor('Check_Policy');
-	const c = await defaultKeyFor('Check-Policy');
 	assert.notEqual(a, b);
-	assert.equal(b, '12345-0-Check_Policy');
-	assert.equal(c, '12345-0-Check-Policy');
+	assert.match(b, new RegExp(`^12345-0-0-Check_Policy-${H}$`));
 	assert.match(a, PLATFORM_KEY);
 });
 
 test('default key: a non-ASCII name is accepted by the platform alphabet', async () => {
-	const key = await defaultKeyFor('Prüfung – Richtlinie ✓');
-	assert.match(key, PLATFORM_KEY);
+	assert.match(await defaultKeyFor('Prüfung – Richtlinie ✓'), PLATFORM_KEY);
 });
 
-test('default key: a very long name is capped at 256 and still distinct', async () => {
+test('default key: a very long name, or a very long execution id, is capped at 256 and still distinct', async () => {
 	const long = 'x'.repeat(400);
 	const key1 = await defaultKeyFor(long + 'a');
 	const key2 = await defaultKeyFor(long + 'b');
-	assert.equal(key1.length, 256);
-	assert.equal(key2.length, 256);
+	const key3 = await defaultKeyFor('AxonFlow', '9'.repeat(400));
+	for (const key of [key1, key2, key3]) {
+		assert.equal(key.length, 256);
+		assert.match(key, PLATFORM_KEY);
+	}
 	assert.notEqual(key1, key2);
-	assert.match(key1, PLATFORM_KEY);
+});
+
+test('default key: a different statement in the same execution, item and run gets a different key (no replayed decision)', async () => {
+	// A Loop Over Items with batch size 1 runs the node with the same execution
+	// id and item index each time; AxonFlow replays a stored answer for a
+	// repeated key without comparing bodies.
+	const allow = await defaultKeyFor('AxonFlow', '12345', 0, 'SELECT 1');
+	const deny = await defaultKeyFor('AxonFlow', '12345', 0, 'rm -rf /');
+	assert.notEqual(allow, deny);
+});
+
+test('default key: the same statement in another run of the node gets a different key; a retry of the same call keeps its key', async () => {
+	const run0 = await defaultKeyFor('AxonFlow', '12345', 0, 'SELECT 1');
+	const run1 = await defaultKeyFor('AxonFlow', '12345', 1, 'SELECT 1');
+	const run0again = await defaultKeyFor('AxonFlow', '12345', 0, 'SELECT 1');
+	assert.notEqual(run0, run1);
+	assert.equal(run0, run0again);
+	assert.match(run1, new RegExp(`^12345-0-1-AxonFlow-${H}$`));
 });
 
 test('an explicit Idempotency Key is sent as given, even one the platform will refuse', async () => {
@@ -512,14 +536,110 @@ test('default key: the platform alphabet is case-sensitive, so names differing o
 	const a = await defaultKeyFor('A b');
 	const b = await defaultKeyFor('A B');
 	assert.notEqual(a, b);
-	assert.match(a, /^12345-0-A_b-[0-9a-f]{8}$/);
-	assert.match(b, /^12345-0-A_B-[0-9a-f]{8}$/);
+	assert.match(a, new RegExp(`^12345-0-0-A_b-${H}-${H}$`));
+	assert.match(b, new RegExp(`^12345-0-0-A_B-${H}-${H}$`));
 });
 
 test('default key: two invalid names that sanitise to the same text get different keys (the hash reads the ORIGINAL name)', async () => {
 	const a = await defaultKeyFor('A B');
 	const b = await defaultKeyFor('A(B');
-	assert.match(a, /^12345-0-A_B-[0-9a-f]{8}$/);
-	assert.match(b, /^12345-0-A_B-[0-9a-f]{8}$/);
+	assert.match(a, new RegExp(`^12345-0-0-A_B-${H}-${H}$`));
+	assert.match(b, new RegExp(`^12345-0-0-A_B-${H}-${H}$`));
 	assert.notEqual(a, b);
+});
+
+
+// ─── On Deny: one default per node version ───────────────────────────────────
+
+test('On Deny, version 1 with the option unset: a 403 deny STOPS the node with the reason and the decision named', async () => {
+	const err = await errorOf({ params: CHECK_POLICY, response: wire(403, CHECK_INPUT_DENY), typeVersion: 1 });
+	assert.equal(err.message, 'AxonFlow denied the request: explicit_constraint (decision 6090bc98-9703-41cf-8a0a-8585a9456f13)');
+	assert.equal(err.httpCode, '403');
+});
+
+test('On Deny, version 1: failureMode open does not swallow a deny (a 4xx is rethrown, as before)', async () => {
+	const err = await errorOf({ params: { ...CHECK_POLICY, failureMode: 'open' }, response: wire(403, CHECK_INPUT_DENY), typeVersion: 1 });
+	assert.match(err.message, /^AxonFlow denied the request: explicit_constraint/);
+});
+
+test('On Deny, version 1 under continueOnFail: the item carries error and no allowed, so a false branch on allowed is never reached', async () => {
+	const { item } = await run({ params: CHECK_POLICY, response: wire(403, CHECK_INPUT_DENY), typeVersion: 1, continueOnFail: true });
+	assert.deepEqual(item, { error: 'AxonFlow denied the request: explicit_constraint (decision 6090bc98-9703-41cf-8a0a-8585a9456f13)' });
+});
+
+test('On Deny, version 2 with the option unset: a 403 deny is the item', async () => {
+	const { item } = await run({ params: CHECK_POLICY, response: wire(403, CHECK_INPUT_DENY), typeVersion: 2 });
+	assert.deepEqual(item, CHECK_INPUT_DENY);
+});
+
+test('On Deny set explicitly overrides the version default, both ways', async () => {
+	const { item } = await run({ params: { ...CHECK_POLICY, onDeny: 'output' }, response: wire(403, CHECK_INPUT_DENY), typeVersion: 1 });
+	assert.equal(item.allowed, false);
+	const err = await errorOf({ params: { ...CHECK_POLICY, onDeny: 'error' }, response: wire(403, CHECK_INPUT_DENY), typeVersion: 2 });
+	assert.match(err.message, /^AxonFlow denied the request: explicit_constraint/);
+});
+
+test('On Deny error: a deny with no block_reason and no decision_id still names itself', async () => {
+	const err = await errorOf({ params: { ...CHECK_POLICY, onDeny: 'error' }, response: wire(403, { allowed: false }) });
+	assert.equal(err.message, 'AxonFlow denied the request: no reason given');
+});
+
+test('On Deny error: control characters in the reason are removed from the message', async () => {
+	const err = await errorOf({ params: { ...CHECK_POLICY, onDeny: 'error' }, response: wire(403, { allowed: false, block_reason: 'a\nb', decision_id: 'd1' }) });
+	assert.equal(err.message, 'AxonFlow denied the request: a b (decision d1)');
+});
+
+test('On Deny error: a 200 with allowed:false (a platform older than v8) stops too; an allow never does', async () => {
+	const err = await errorOf({ params: { ...CHECK_POLICY, onDeny: 'error' }, response: wire(200, { allowed: false, block_reason: 'old_deny' }) });
+	assert.equal(err.message, 'AxonFlow denied the request: old_deny');
+	const { item } = await run({ params: { ...CHECK_POLICY, onDeny: 'error' }, response: wire(200, CHECK_INPUT_ALLOW) });
+	assert.equal(item.allowed, true);
+});
+
+test('On Deny applies to Check Policy only: an Audit Log 2xx body with allowed:false is passed through', async () => {
+	const { item } = await run({ params: { ...RECORD_DECISION }, response: wire(201, { allowed: false, audit_id: 'a1' }), typeVersion: 1 });
+	assert.equal(item.audit_id, 'a1');
+});
+
+test('the node declares versions 1 and 2, defaults new nodes to 2, and gives On Deny one default per version', () => {
+	const d = new AxonFlow().description;
+	assert.deepEqual(d.version, [1, 2]);
+	assert.equal(d.defaultVersion, 2);
+	const onDeny = d.properties.filter((p) => p.name === 'onDeny');
+	const byVersion = Object.fromEntries(
+		onDeny.map((p) => [String((p.displayOptions?.show?.['@version'] as number[])[0]), p.default]),
+	);
+	assert.deepEqual(byVersion, { '1': 'error', '2': 'output' });
+});
+
+// ─── 401 causes, approvals, transport errors ─────────────────────────────────
+
+test('401 user_token_required names the organization rule, not the credential', async () => {
+	const err = await errorOf({ params: CHECK_POLICY, response: wire(401, { success: false, error: 'user_token_required' }) });
+	assert.equal(err.message, 'AxonFlow refused the request (HTTP 401): this organization requires a per-user token, which the n8n node does not send: user_token_required');
+});
+
+test('401 platform text ending in a period is not doubled', async () => {
+	const err = await errorOf({ params: CHECK_POLICY, response: wire(401, { error: 'token expired.' }) });
+	assert.equal(err.message, 'AxonFlow rejected the credential (HTTP 401): token expired. Check the Client ID and User Token of the AxonFlow API credential.');
+});
+
+test('waitForApproval 201 (spec shape): approval_id is the request_id UUID, request_id is added, raw keeps the integer id', async () => {
+	const { item } = await run({ params: WAIT_FOR_APPROVAL, response: wire(201, HITL_CREATED) });
+	assert.equal(item.approval_id, '8f14e45f-ceea-467a-9575-4bd3e1e5b0c1');
+	assert.equal(item.request_id, '8f14e45f-ceea-467a-9575-4bd3e1e5b0c1');
+	assert.equal(((item.raw as Json).data as Json).id, 42);
+});
+
+test('waitForApproval without request_id falls back to data.id (older platforms)', async () => {
+	const { item } = await run({ params: WAIT_FOR_APPROVAL, response: wire(200, { success: true, data: { id: 'legacy-id', status: 'pending' } }) });
+	assert.equal(item.approval_id, 'legacy-id');
+	assert.equal(item.request_id, undefined);
+});
+
+test('a transport error as n8n reports it (httpCode ECONNREFUSED, not a number) is no_response under Open and rethrown under Closed', async () => {
+	const { item } = await run({ params: CHECK_POLICY, response: noResponse() });
+	assert.equal(item.cause, 'no_response');
+	assert.equal('allowed' in item, false);
+	await assert.rejects(run({ params: { ...CHECK_POLICY, failureMode: 'closed' }, response: noResponse() }), /ECONNREFUSED/);
 });

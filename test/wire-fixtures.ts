@@ -48,9 +48,12 @@ export function n8nHelperAnswer(
 	};
 }
 
-/** A transport failure: n8n's error carries no HTTP code. */
-export function noResponse(message = 'connect ECONNREFUSED 127.0.0.1:8080'): Error {
-	return new Error(message);
+/**
+ * A transport failure as n8n-core reports it: a NodeApiError whose httpCode is
+ * the Node error code (e.g. ECONNREFUSED), not a number.
+ */
+export function noResponse(message = 'connect ECONNREFUSED 127.0.0.1:8080', code = 'ECONNREFUSED'): Error {
+	return Object.assign(new Error(message), { httpCode: code });
 }
 
 // ─── check-input ────────────────────────────────────────────────────────────
@@ -121,25 +124,38 @@ export const CHECK_INPUT_DENY_APPROVAL_REQUIRED = {
 /** SPEC-DERIVED: JSONError, the auth middleware's envelope. A community stack admits any credential, so a rejection 401 is not measurable there. */
 export const MIDDLEWARE_401 = { error: { code: 401, message: 'invalid credentials' } };
 
-/** SPEC-DERIVED: a REST per-minute 429, a plain error body with Retry-After only (RateLimitEnvelope description). */
-export const PER_MINUTE_429 = { error: 'rate limit exceeded' };
+/**
+ * SPEC SHAPE, SOURCE TEXT: the spec gives a REST per-minute 429 a plain error
+ * body with Retry-After; the message is the Community SaaS auth path's
+ * (platform/agent/auth.go at axonflow-enterprise 76fb9d376).
+ */
+export const PER_MINUTE_429 = { error: 'Rate limit exceeded (60 req/min). Try again shortly.' };
 
-/** SPEC-DERIVED: RateLimitEnvelope for a daily-quota 429 (Community SaaS only). */
+/** SOURCE-DERIVED: writeRateLimitError, platform/agent/community_saas_ratelimit_response.go at 76fb9d376 (the upgrade URLs abridged). */
 export const DAILY_QUOTA_429 = {
-	error: 'daily request quota exceeded',
+	error: 'Daily request limit reached. Resets at midnight UTC.',
 	limit_type: 'daily_quota',
-	tier: 'free',
-	limit: 1000,
+	tier: 'Free',
+	limit: 200,
 	remaining: 0,
-	window: '24h',
+	window: 'daily_utc',
 	resets_at: '2026-09-17T00:00:00Z',
+	upgrade: {
+		tier: 'Pro',
+		wording: 'Daily limit reached on Free tier (200 events). Pro raises this to 2,000/day. Resets at midnight UTC.',
+		compare_url: 'https://getaxonflow.com/pricing',
+		buy_url: 'https://getaxonflow.com/pricing',
+	},
 };
 
-/** SPEC-DERIVED: RateLimitEnvelope with 403 for a Pro-only feature (not a decision). */
+/** SOURCE-DERIVED: writeFreeLimitError with limit_type feature_pro_only, same file (a 403 that is not a decision). */
 export const FEATURE_PRO_ONLY_403 = {
-	error: 'this feature requires the Pro tier',
+	error: 'LLM cost pre-flight is a Pro feature — see what a multi-step plan will cost before it runs.',
 	limit_type: 'feature_pro_only',
-	tier: 'free',
+	tier: 'Free',
+	limit: 0,
+	remaining: 0,
+	upgrade: { tier: 'Pro' },
 };
 
 /** MEASURED: 402 from check-input for a sixth client id on a community organization. */
@@ -156,8 +172,18 @@ export const HITL_QUEUE_404 = {
 		'No such endpoint on the AxonFlow agent. If you are an MCP client doing OAuth discovery: this server uses HTTP Basic auth (base64(org_id:license_key)) via AXONFLOW_AUTH, not OAuth.',
 };
 
-/** SPEC-DERIVED: the HITL queue's create response, the APIResponse envelope `{success, data: {id, status, expires_at}}` extractApprovalData reads. The route is Enterprise-only, so a community stack answers 404 (HITL_QUEUE_404). */
+/**
+ * SPEC-DERIVED: POST /api/v1/hitl/queue answers 201 `{success, data:
+ * HITLApprovalRequest}`, where `id` is the integer row id and `request_id` the
+ * UUID that GET /api/v1/hitl/queue/{id} takes. The route is Enterprise-only, so
+ * a community stack answers 404 (HITL_QUEUE_404).
+ */
 export const HITL_CREATED = {
 	success: true,
-	data: { id: 'approval-uuid-1', status: 'pending', expires_at: '2026-05-23T00:00:00Z' },
+	data: {
+		id: 42,
+		request_id: '8f14e45f-ceea-467a-9575-4bd3e1e5b0c1',
+		status: 'pending',
+		expires_at: '2026-05-23T00:00:00Z',
+	},
 };

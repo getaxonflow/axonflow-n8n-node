@@ -33,6 +33,8 @@ interface ExecuteFixture {
 	nodeName?: string;
 	workflowId?: string;
 	continueOnFail?: boolean;
+	typeVersion?: number;
+	runIndex?: number;
 }
 
 function makeExecuteContext(fx: ExecuteFixture) {
@@ -60,7 +62,8 @@ function makeExecuteContext(fx: ExecuteFixture) {
 			if (fallback !== undefined) return fallback;
 			throw new Error(`parameter not provided in fixture: ${name}`);
 		},
-		getNode: () => ({ name: nodeName }),
+		getNode: () => ({ name: nodeName, typeVersion: fx.typeVersion ?? 2 }),
+		getWorkflowDataProxy: () => ({ $runIndex: fx.runIndex ?? 0 }),
 		getExecutionId: () => executionId,
 		continueOnFail: () => continueOnFail,
 		helpers: {
@@ -301,10 +304,7 @@ test('idempotency-key default falls back to executionId-itemIndex-nodeName when 
 		nodeName: 'AxonFlowNode',
 	});
 
-	assert.equal(
-		requests[0].headers?.['Idempotency-Key'],
-		'exec-99-0-AxonFlowNode',
-	);
+	assert.match(String(requests[0].headers?.['Idempotency-Key']), /^exec-99-0-0-AxonFlowNode-[0-9a-f]{8}$/);
 });
 
 test('endpoint trailing-slash is stripped so URL composition stays single-/', async () => {
@@ -433,9 +433,9 @@ test('every operation defaults to the executionId-itemIndex-nodeName Idempotency
 			nodeName: 'NodeOne',
 			responses,
 		});
-		assert.equal(
-			requests[0].headers?.['Idempotency-Key'],
-			'exec-default-0-NodeOne',
+		assert.match(
+			String(requests[0].headers?.['Idempotency-Key']),
+			/^exec-default-0-0-NodeOne-[0-9a-f]{8}$/,
 			`operation ${op} must default Idempotency-Key when none supplied`,
 		);
 	}
@@ -559,7 +559,7 @@ test('failureMode "open" RETHROWS HTTP 429 (rate limit — n8n Retry on Fail sho
 	);
 });
 
-test('shouldFailOpen probes both `httpCode` string and `context.statusCode` number shapes (forward-compat across n8n versions)', async () => {
+test('failureMode "open" swallows HTTP 502 on Audit Log too', async () => {
 		const { result } = await runExecute({
 		params: {
 			operation: 'auditLog',
@@ -821,7 +821,7 @@ test('an EMPTY idempotency key falls back to executionId-itemIndex-nodeName', as
 		executionId: 'exec-99',
 		nodeName: 'AxonFlowNode',
 	});
-	assert.equal(requests[0].headers?.['Idempotency-Key'], 'exec-99-0-AxonFlowNode');
+	assert.match(String(requests[0].headers?.['Idempotency-Key']), /^exec-99-0-0-AxonFlowNode-[0-9a-f]{8}$/);
 });
 
 test('the declared idempotency default references no other node ($node is a lookup of OTHER nodes by name)', () => {
