@@ -40,8 +40,6 @@ WEBHOOK_PATH="e2e-check-policy-deny-is-a-branchable-item-workflow"
 
 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
   -c "DELETE FROM mcp_query_audits WHERE connector_name = '$CONNECTOR'" 2>/dev/null || true
-psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-  -c "DELETE FROM idempotency_keys WHERE key = 'e2e-deny-branch-key'" 2>/dev/null || true
 
 CRED_ID=$(n8n_create_credential "AxonFlow E2E Deny Branch" "http://axonflow-agent:8080" "e2e-n8n-test" "e2e-user-token")
 WF_ID=$(n8n_import_workflow "$SCRIPT_DIR/workflow.json" "$CRED_ID")

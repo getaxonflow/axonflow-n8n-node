@@ -23,7 +23,6 @@
         "statement": "rm -rf / --no-preserve-root",
         "mcpOperation": "execute",
         "parameters": "{}",
-        "idempotencyKey": "e2e-deny-branch-key",
         "failureMode": "closed"
       },
       "id": "2",
