@@ -31,12 +31,22 @@ const path = require('node:path');
 
 const EARLY_EXIT_LONG = new Set(['--quiet', '--silent', '--max-count', '--files-with-matches', '--files-without-match']);
 const GREPS = new Set(['grep', 'egrep', 'fgrep']);
-// Commands that run the command after them, so `timeout 5 grep -q` and
-// `xargs grep -ql` are a grep reading the pipe. The value is how many leading
-// non-option words the wrapper itself takes (timeout's duration).
+// Commands that run the command after them with the same stdin, so
+// `timeout 5 grep -q` is a grep reading the pipe: `takes` is how many leading
+// non-option words the wrapper itself takes (timeout's duration), `valueOpts`
+// its options whose value is the NEXT word (`nice -n 10`). xargs is
+// deliberately absent: it reads the pipe itself and runs grep on the file names
+// it collects, so an early grep exit does not signal the producer.
 const COMMAND_WRAPPERS = new Map([
-	['command', 0], ['env', 0], ['exec', 0], ['nice', 0], ['nohup', 0],
-	['stdbuf', 0], ['time', 0], ['timeout', 1], ['xargs', 0],
+	['command', { takes: 0, valueOpts: [] }],
+	['exec', { takes: 0, valueOpts: [] }],
+	['nohup', { takes: 0, valueOpts: [] }],
+	['time', { takes: 0, valueOpts: [] }],
+	['env', { takes: 0, valueOpts: ['-u', '-C', '-S'] }],
+	['nice', { takes: 0, valueOpts: ['-n'] }],
+	['stdbuf', { takes: 0, valueOpts: ['-i', '-o', '-e'] }],
+	['sudo', { takes: 0, valueOpts: ['-u', '-g', '-C', '-h', '-p'] }],
+	['timeout', { takes: 1, valueOpts: ['-s', '-k'] }],
 ]);
 
 function listShellFiles(target) {
@@ -189,9 +199,16 @@ function isEarlyExitGrep(words) {
 		}
 		const name = path.posix.basename(w.replace(/^\\/, ''));
 		if (COMMAND_WRAPPERS.has(name)) {
+			const wrapper = COMMAND_WRAPPERS.get(name);
 			k++;
-			while (k < words.length && words[k].startsWith('-')) k++;
-			k += COMMAND_WRAPPERS.get(name);
+			// the wrapper's own options (and the value of one that takes the next
+			// word), then the words it takes itself
+			while (k < words.length && words[k].startsWith('-')) {
+				const takesValue = wrapper.valueOpts.includes(words[k]);
+				k++;
+				if (takesValue) k++;
+			}
+			k += wrapper.takes;
 			continue;
 		}
 		if (!GREPS.has(name)) return false;
