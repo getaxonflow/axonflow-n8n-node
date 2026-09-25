@@ -1,0 +1,141 @@
+{
+  "name": "E2E: Check Policy deny stops a version-1 node",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "e2e-check-policy-deny-stops-a-version-1-node-workflow",
+        "httpMethod": "POST",
+        "responseMode": "onReceived"
+      },
+      "id": "1",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "checkPolicy",
+        "connectorType": "e2e-deny-v1",
+        "statement": "rm -rf / --no-preserve-root",
+        "mcpOperation": "execute",
+        "parameters": "{}",
+        "failureMode": "closed"
+      },
+      "id": "2",
+      "name": "AxonFlow Check Policy",
+      "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [
+        300,
+        300
+      ],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "1",
+          "name": "AxonFlow E2E"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "3",
+      "name": "Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "4",
+      "name": "Allowed Branch",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        700,
+        200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5",
+      "name": "Denied Branch",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        700,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "AxonFlow Check Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AxonFlow Check Policy": {
+      "main": [
+        [
+          {
+            "node": "Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Allowed Branch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Denied Branch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

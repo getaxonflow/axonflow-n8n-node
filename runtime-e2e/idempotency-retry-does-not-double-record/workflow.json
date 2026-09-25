@@ -22,7 +22,8 @@
         "idempotencyKey": "e2e-fixed-idem-key",
         "connectorType": "e2e-idem-test",
         "statement": "SELECT 1",
-        "mcpOperation": "query"
+        "mcpOperation": "query",
+        "failureMode": "closed"
       },
       "id": "2",
       "name": "AxonFlow Record (Idempotent)",

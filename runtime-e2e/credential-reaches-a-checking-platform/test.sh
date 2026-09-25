@@ -141,17 +141,22 @@ run_workflow() {
 run_workflow default-key '{}'
 run_workflow explicit-key '{"idempotencyKey": "n8n-leg-explicit-key"}'
 
-both() { cat "$EVIDENCE/execute-$1.out" "$EVIDENCE/execute-$1.err" 2>/dev/null; }
+# Each run's stdout and stderr, as one file per run. The greps below read a
+# FILE, never a pipe: under pipefail a `producer | grep -q` that matches early
+# can report the producer's SIGPIPE (141) as not-found.
+both() { cat "$EVIDENCE/execute-$1.out" "$EVIDENCE/execute-$1.err" 2>/dev/null > "$EVIDENCE/both-$1.txt"; echo "$EVIDENCE/both-$1.txt"; }
+DEFAULT_KEY_OUT=$(both default-key)
+EXPLICIT_KEY_OUT=$(both explicit-key)
 echo ""
-echo "OBSERVED: no Idempotency Key set: exit $(cat "$EVIDENCE/execute-default-key.rc"): $(both default-key | grep -m1 -oE 'Unrecognized node type[^"]{0,80}|ExpressionError[^"]{0,120}|Referenced node[^"]{0,80}|"allowed": ?(true|false)|Authorization failed[^"]{0,80}|Forbidden[^"]{0,60}' || echo '(no marker)')"
-echo "OBSERVED: an explicit Idempotency Key: exit $(cat "$EVIDENCE/execute-explicit-key.rc"): $(both explicit-key | grep -m1 -oE 'Unrecognized node type[^"]{0,80}|"allowed": ?(true|false)|Authorization failed[^"]{0,80}|401[^"]{0,60}|Forbidden[^"]{0,60}' || echo '(no marker)')"
+echo "OBSERVED: no Idempotency Key set: exit $(cat "$EVIDENCE/execute-default-key.rc"): $(grep -m1 -oE 'Unrecognized node type[^"]{0,80}|ExpressionError[^"]{0,120}|Referenced node[^"]{0,80}|"allowed": ?(true|false)|Authorization failed[^"]{0,80}|Forbidden[^"]{0,60}' "$DEFAULT_KEY_OUT" || echo '(no marker)')"
+echo "OBSERVED: an explicit Idempotency Key: exit $(cat "$EVIDENCE/execute-explicit-key.rc"): $(grep -m1 -oE 'Unrecognized node type[^"]{0,80}|"allowed": ?(true|false)|Authorization failed[^"]{0,80}|AxonFlow rejected the credential[^"]{0,80}|401[^"]{0,60}|Forbidden[^"]{0,60}' "$EXPLICIT_KEY_OUT" || echo '(no marker)')"
 
-if [ "$(cat "$EVIDENCE/execute-default-key.rc")" = 0 ] && ! both default-key | grep -q "Referenced node doesn't exist"; then
+if [ "$(cat "$EVIDENCE/execute-default-key.rc")" = 0 ] && ! grep -q "Referenced node doesn't exist" "$DEFAULT_KEY_OUT"; then
   pass "a workflow with no Idempotency Key set executes"
 else
   fail "a workflow with no Idempotency Key set executes"
 fi
-if [ "$(cat "$EVIDENCE/execute-explicit-key.rc")" = 0 ] && both explicit-key | grep -qE '"allowed": ?(true|false)' && ! both explicit-key | grep -qE 'Authorization failed|\[401\]'; then
+if [ "$(cat "$EVIDENCE/execute-explicit-key.rc")" = 0 ] && grep -qE '"allowed": ?(true|false)' "$EXPLICIT_KEY_OUT" && ! grep -qE 'Authorization failed|\[401\]|AxonFlow rejected the credential' "$EXPLICIT_KEY_OUT"; then
   pass "the credential is accepted: check-input answered with a decision, not a 401"
 else
   fail "the credential is accepted: check-input answered with a decision, not a 401"

@@ -3,8 +3,9 @@
 #
 # Usage:
 #   ./verify-db.sh audit-row-exists <tool_name>
-#   ./verify-db.sh audit-row-has-user-id <tool_name> <expected_user_id>
+#   ./verify-db.sh audit-row-excludes-secret <tool_name> <secret>
 #   ./verify-db.sh audit-row-count <tool_name> <expected>
+#   ./verify-db.sh mcp-audit-count <connector_name> <expected>
 #   ./verify-db.sh hitl-row <approval_id>
 #   ./verify-db.sh hitl-count <expected_minimum>
 #   ./verify-db.sh hitl-field <approval_id> <field> <expected>
@@ -19,6 +20,12 @@
 #   DB_NAME (default: axonflow)
 #   DB_USER (default: axonflow)
 #   DB_PASSWORD (default: localdev123)
+#
+# audit-row-* read the rows Record Decision and Audit Log write through
+# /api/v1/audit/tool-call: audit_logs rows with request_type 'tool_call_audit'
+# and the tool name in policy_details->>'tool_name' (audit_logs has no
+# tool_name column). A failed query exits non-zero under set -e, so a query
+# error is a failure, never an empty answer.
 
 set -euo pipefail
 
@@ -46,26 +53,32 @@ case "${1:-}" in
   audit-row-exists)
     tool_name="${2:?usage: verify-db.sh audit-row-exists <tool_name>}"
     validate_safe_string "$tool_name" "tool_name"
-    count=$(psql_q -c "SELECT COUNT(*) FROM mcp_query_audits WHERE connector_name = '$tool_name'")
+    count=$(psql_q -c "SELECT COUNT(*) FROM audit_logs WHERE request_type = 'tool_call_audit' AND policy_details->>'tool_name' = '$tool_name'")
     if [ "$count" -lt 1 ]; then
-      echo "FAIL: no audit row found for tool_name=$tool_name"
+      echo "FAIL: no tool_call_audit row in audit_logs for tool_name=$tool_name"
       exit 1
     fi
-    echo "OK: $count audit row(s) for tool_name=$tool_name"
+    echo "OK: $count tool_call_audit row(s) in audit_logs for tool_name=$tool_name"
     exit 0
     ;;
 
-  audit-row-has-user-id)
-    tool_name="${2:?usage: verify-db.sh audit-row-has-user-id <tool_name> <expected_user_id>}"
-    expected_user_id="${3:?}"
+  audit-row-excludes-secret)
+    tool_name="${2:?usage: verify-db.sh audit-row-excludes-secret <tool_name> <secret>}"
+    secret="${3:?}"
     validate_safe_string "$tool_name" "tool_name"
-    validate_safe_string "$expected_user_id" "expected_user_id"
-    actual=$(psql_q -c "SELECT user_id FROM mcp_query_audits WHERE connector_name = '$tool_name' LIMIT 1")
-    if [ "$actual" != "$expected_user_id" ]; then
-      echo "FAIL: user_id='$actual' (expected '$expected_user_id') for tool_name=$tool_name"
+    validate_safe_string "$secret" "secret"
+    # A row must exist, or "no row carries the secret" is true of nothing.
+    count=$(psql_q -c "SELECT COUNT(*) FROM audit_logs WHERE request_type = 'tool_call_audit' AND policy_details->>'tool_name' = '$tool_name'")
+    if [ "$count" -lt 1 ]; then
+      echo "FAIL: no tool_call_audit row in audit_logs for tool_name=$tool_name, so the secret check has nothing to read"
       exit 1
     fi
-    echo "OK: user_id='$actual' matches expected for tool_name=$tool_name"
+    leaks=$(psql_q -c "SELECT COUNT(*) FROM audit_logs a WHERE a.request_type = 'tool_call_audit' AND a.policy_details->>'tool_name' = '$tool_name' AND strpos(row_to_json(a)::text, '$secret') > 0")
+    if [ "$leaks" -ne 0 ]; then
+      echo "FAIL: $leaks audit_logs row(s) for tool_name=$tool_name carry the credential secret"
+      exit 1
+    fi
+    echo "OK: none of the $count audit_logs row(s) for tool_name=$tool_name carries the credential secret"
     exit 0
     ;;
 
@@ -73,12 +86,12 @@ case "${1:-}" in
     tool_name="${2:?usage: verify-db.sh audit-row-count <tool_name> <expected>}"
     expected="${3:?}"
     validate_safe_string "$tool_name" "tool_name"
-    count=$(psql_q -c "SELECT COUNT(*) FROM mcp_query_audits WHERE connector_name = '$tool_name'")
+    count=$(psql_q -c "SELECT COUNT(*) FROM audit_logs WHERE request_type = 'tool_call_audit' AND policy_details->>'tool_name' = '$tool_name'")
     if [ "$count" -ne "$expected" ]; then
-      echo "FAIL: audit_logs has $count rows for tool_name=$tool_name (expected $expected)"
+      echo "FAIL: audit_logs has $count tool_call_audit row(s) for tool_name=$tool_name (expected $expected)"
       exit 1
     fi
-    echo "OK: audit_logs has $count row(s) for tool_name=$tool_name"
+    echo "OK: audit_logs has $count tool_call_audit row(s) for tool_name=$tool_name"
     exit 0
     ;;
 
@@ -168,6 +181,19 @@ case "${1:-}" in
     exit 0
     ;;
 
+  mcp-audit-count)
+    connector_name="${2:?usage: verify-db.sh mcp-audit-count <connector_name> <expected>}"
+    expected="${3:?}"
+    validate_safe_string "$connector_name" "connector_name"
+    count=$(psql_q -c "SELECT COUNT(*) FROM mcp_query_audits WHERE connector_name = '$connector_name'")
+    if [ "$count" -ne "$expected" ]; then
+      echo "FAIL: mcp_query_audits has $count row(s) for connector=$connector_name (expected $expected)"
+      exit 1
+    fi
+    echo "OK: mcp_query_audits has $count row(s) for connector=$connector_name"
+    exit 0
+    ;;
+
   audit-log-exists)
     client_id="${2:?usage: verify-db.sh audit-log-exists <client_id>}"
     validate_safe_string "$client_id" "client_id"
@@ -181,7 +207,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "Usage: $0 {audit-row-exists|audit-row-has-user-id|audit-row-count|hitl-row|hitl-count|hitl-field|idempotency-row|idempotency-count|mcp-audit-exists|audit-log-exists} ..."
+    echo "Usage: $0 {audit-row-exists|audit-row-excludes-secret|audit-row-count|mcp-audit-count|hitl-row|hitl-count|hitl-field|idempotency-row|idempotency-count|mcp-audit-exists|audit-log-exists} ..."
     exit 2
     ;;
 esac

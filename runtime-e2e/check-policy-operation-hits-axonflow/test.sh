@@ -11,11 +11,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
-export WORK="${WORK:-/tmp}"
+# A leg run on its own gets a private directory: /tmp is shared by every run.
+export WORK="${WORK:-$(mktemp -d)}"
 
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
+DB_NAME="${DB_NAME:-axonflow}"
+DB_USER="${DB_USER:-axonflow}"
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner
@@ -27,7 +30,7 @@ CONNECTOR_NAME="e2e-check-policy"
 WEBHOOK_PATH="e2e-check-policy-operation-hits-axonflow-workflow"
 
 # SETUP: clean prior rows
-psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
   -c "DELETE FROM mcp_query_audits WHERE connector_name = '$CONNECTOR_NAME'" 2>/dev/null || true
 
 # 1. Create credential
@@ -76,7 +79,7 @@ echo "OK: workflow execution succeeded"
 "$LIB_DIR/verify-db.sh" mcp-audit-exists "$CONNECTOR_NAME"
 
 # CLEANUP
-psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
   -c "DELETE FROM mcp_query_audits WHERE connector_name = '$CONNECTOR_NAME'" 2>/dev/null || true
 n8n_delete_workflow "$WF_ID"
 

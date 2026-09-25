@@ -12,11 +12,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../_lib"
 N8N_URL="${N8N_URL:-http://localhost:15678}"
-export WORK="${WORK:-/tmp}"
+# A leg run on its own gets a private directory: /tmp is shared by every run.
+export WORK="${WORK:-$(mktemp -d)}"
 
 export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
+DB_NAME="${DB_NAME:-axonflow}"
+DB_USER="${DB_USER:-axonflow}"
 
 source "$LIB_DIR/n8n-api.sh"
 n8n_setup_owner
@@ -30,8 +33,8 @@ WEBHOOK_PATH_DECISION="e2e-record-decision-writes-audit-row-workflow"
 WEBHOOK_PATH_AUDIT="e2e-record-decision-writes-audit-row-workflow-audit-log"
 
 # SETUP: clean any prior test rows
-psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM audit_logs WHERE tool_name IN ('$TOOL_NAME', '$AUDIT_TOOL_NAME')" 2>/dev/null || true
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+  -c "DELETE FROM audit_logs WHERE request_type = 'tool_call_audit' AND policy_details->>'tool_name' IN ('$TOOL_NAME', '$AUDIT_TOOL_NAME')" 2>/dev/null || true
 
 # 1. Create AxonFlow credential
 CRED_ID=$(n8n_create_credential "AxonFlow E2E Decision" "http://axonflow-agent:8080" "e2e-n8n-test" "e2e-user-token")
@@ -116,20 +119,29 @@ echo "OK: Audit Log workflow succeeded"
 # Allow async DB writes to flush
 sleep 2
 
-# ASSERT 1: Record Decision audit row exists
+# Both workflows run with Failure Mode: Closed, so a 5xx or an unreachable
+# orchestrator fails the execution above instead of reading as success.
+#
+# These assertions were deleted in fbeed45 and e68c7f4 (2026-05-24) with their
+# comments left behind; the leg then passed while writing nothing it checked.
+# A failed query fails the leg (verify-db.sh runs under set -e).
+
+# ASSERT 1: Record Decision audit row exists, exactly once
 echo "Verifying DB state for Record Decision..."
+"$LIB_DIR/verify-db.sh" audit-row-count "$TOOL_NAME" 1
 
-# ASSERT 2: Audit Log variant row exists
+# ASSERT 2: Audit Log variant row exists, exactly once
 echo "Verifying DB state for Audit Log variant..."
+"$LIB_DIR/verify-db.sh" audit-row-count "$AUDIT_TOOL_NAME" 1
 
-# ASSERT 3: the credential secret is never stored as the audit row's user_id
-echo "Verifying user_id attribution..."
-STORED_USER_ID=$(psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow -tAc "SELECT COALESCE(user_id, '') FROM audit_logs WHERE tool_name = '$TOOL_NAME' LIMIT 1" 2>/dev/null || echo "")
-[ "$STORED_USER_ID" != "e2e-user-token" ] || { echo "FAIL: the credential secret was stored as the audit row's user_id"; exit 1; }
+# ASSERT 3: the credential secret appears nowhere in either row
+echo "Verifying the credential secret is not stored..."
+"$LIB_DIR/verify-db.sh" audit-row-excludes-secret "$TOOL_NAME" "e2e-user-token"
+"$LIB_DIR/verify-db.sh" audit-row-excludes-secret "$AUDIT_TOOL_NAME" "e2e-user-token"
 
 # CLEANUP: remove test rows and workflows
-psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow \
-  -c "DELETE FROM audit_logs WHERE tool_name IN ('$TOOL_NAME', '$AUDIT_TOOL_NAME')" 2>/dev/null || true
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+  -c "DELETE FROM audit_logs WHERE request_type = 'tool_call_audit' AND policy_details->>'tool_name' IN ('$TOOL_NAME', '$AUDIT_TOOL_NAME')" 2>/dev/null || true
 n8n_delete_workflow "$WF_ID"
 n8n_delete_workflow "$WF2_ID"
 

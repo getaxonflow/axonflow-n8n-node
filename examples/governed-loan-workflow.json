@@ -27,7 +27,7 @@
       "id": "2",
       "name": "AxonFlow Check Policy",
       "type": "@axonflow/n8n-nodes-axonflow.axonFlow",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [460, 300],
       "credentials": {
         "axonFlowApi": {
