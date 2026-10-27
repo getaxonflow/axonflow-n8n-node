@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-27: branchable policy denials and cause-specific refusals
+
+### Added
+
+- Check Policy nodes now have an **On Deny** option. New version-2 nodes output
+  a policy deny as a branchable item with `allowed: false`, the complete reason,
+  and the decision id. Existing version-1 nodes preserve their stop-on-deny
+  behavior, now with an actionable error.
+- Unreachable-platform items now identify governance as unavailable and include
+  a cause, while deliberately omitting `allowed` so a missing answer cannot be
+  mistaken for an allow.
+- Wait for Approval returns the request id accepted by the queue API and exposes
+  `request_id` separately.
+
+### Changed
+
+- Credential, tier-limit, rate-limit, edition, endpoint, and other platform
+  refusals now name their cause and quote the platform response. Transport and
+  5xx failures still follow the configured failure mode; a policy deny does not.
+- The generated Idempotency-Key now includes the run index and a request hash,
+  uses only characters accepted by AxonFlow, and no longer reuses a stored
+  answer for another loop iteration's statement.
+
+### Fixed
+
+- A 200 policy deny from older AxonFlow versions is handled with the same deny
+  semantics as the current 403 response.
+- Runtime verification now proves that n8n installed this checkout, reads real
+  execution items, and counts the correct audit and approval tables.
+
 ## [1.2.1] - 2026-09-14: authentication on n8n 2.x, and the credential secret out of request bodies
 
 ### Fixed
