@@ -117,7 +117,7 @@ Installing into `~/.n8n/nodes` (`cd ~/.n8n/nodes && npm install @axonflow/n8n-no
 
 ## Configure the credential
 
-For Hosted Starter, first [verify your email and activate the account in the Portal](https://portal.try.getaxonflow.com/hosted/start). Download the Hosted API link command there, run it locally, and approve its device code in the signed-in owner session. It saves a protected `~/.config/axonflow/hosted-api.json` file with a separate revocable client credential. Copy its `endpoint`, `tenant_id`, and `secret` into the n8n credential fields below. The node consumes this linked credential; it does not create a Hosted tenant or call anonymous `/api/v1/register`. Do not use a Portal password or Stripe value as the User Token. An answered 402 or 429 is a refusal, so restore the plan or wait for the allowance reset before retrying.
+For Hosted Starter, first [verify your email and activate the account in the Portal](https://portal.try.getaxonflow.com/hosted/start). Download the Hosted API link command there, run it locally, and approve its device code in the signed-in owner session. It saves a protected `~/.config/axonflow/hosted-api.json` file with a separate revocable client credential. Copy its `endpoint`, `tenant_id`, and `secret` into the n8n credential fields below. The node consumes this linked credential; it does not create a Hosted tenant or call anonymous `/api/v1/register`. Do not use a Portal password or Stripe value as the User Token. For governed Hosted workflows, choose **Failure Mode: Closed** on the node so an unreachable policy service stops the call; Open is the node's default. An answered 402 or 429 is a refusal, so restore the plan or wait for the allowance reset before retrying.
 
 **Credentials > New > AxonFlow API.**
 
