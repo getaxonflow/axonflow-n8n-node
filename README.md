@@ -143,7 +143,7 @@ If your organization is eligible for the current Hosted Starter cohort, first [v
 
 ## Three things to know
 
-1. **Bearer Auth > Header Auth.** This credential uses the Header Auth pattern (Authorization built inline) rather than n8n's built-in Bearer Auth class, which silently drops the header in some n8n versions ([n8n#15261](https://github.com/n8n-io/n8n/issues/15261)).
+1. **HTTP Basic auth.** Published 1.2.1 and the current source use n8n's generic Basic auth credential: Client ID is the username and User Token is the password. n8n builds the `Authorization` header; the node does not build it inline.
 2. **Idempotency by default.** Published 1.2.1 sends `Idempotency-Key: {executionId}-{itemIndex}-{nodeName}`. The current unreleased source changes the default to `{executionId}-{itemIndex}-{runIndex}-{nodeName}-{requestHash}` so n8n's `Retry on Fail` doesn't double-record while different loop iterations or request bodies do not reuse an earlier decision: a retry of the same call sends the same key unless a parameter expression changes, such as `{{ $now }}` changing the request body. The run index and request hash matter because AxonFlow replays its stored answer for a repeated key without comparing request bodies. A retry that spans an upgrade between those formats is not deduplicated once. The unreleased source also normalizes the node name and caps the key at 256 characters to match the platform alphabet `A-Z a-z 0-9 _ . : - /`. Override at the node parameter level if you need a domain-specific key; a key you set is sent exactly as written, so keeping it inside that set is up to you.
 3. **HITL pairs with the Wait node.** `Wait for Approval` creates the AxonFlow approval entry (Enterprise) and returns immediately; it does not pause anything itself. Pair it with a downstream Wait node configured for **On Webhook Call** mode, which is what pauses the workflow. As of platform v8.1.0+, pass the Wait node's webhook URL as `notify_url` in the HITL queue request and AxonFlow will POST to it automatically on approval/rejection — no polling sidecar needed. For self-hosted deployments on v8.0.x, two manual paths work: (a) run a small **polling sidecar** that watches `GET /api/v1/hitl/queue/{id}` and POSTs to the Wait node's webhook URL when status changes, or (b) have a reviewer trigger the resume URL manually from the portal. See the [n8n integration docs](https://docs.getaxonflow.com/docs/integration/n8n/#hitl) for details.
 
@@ -155,7 +155,7 @@ Every call this node makes to AxonFlow carries `X-Axonflow-Client: n8n-plugin/<v
 
 ## Example workflow
 
-[`examples/governed-loan-workflow.json`](./examples/governed-loan-workflow.json) — an importable workflow that:
+[`examples/governed-loan-workflow.json`](./examples/governed-loan-workflow.json) is an importable preview for the later package containing node version 2. It is **not compatible with published 1.2.1**, which stops on a denied Check Policy response before an `allowed=false` item can reach an IF node. The preview workflow:
 
 1. Receives a loan request via HTTP trigger,
 2. Calls **Check Policy** on the amount,
