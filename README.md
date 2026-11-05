@@ -20,18 +20,18 @@ Plus a single `AxonFlow API` credential type holding the endpoint + Basic-auth (
 
 ## What the node emits
 
-The node reads the platform's HTTP status **and** its response body, and decides in one place what they mean.
+The current source reads the platform's HTTP status **and** its response body, and decides in one place what they mean. The published 1.2.1 package predates the detailed refusal messages and deny-output behavior below: it rethrows answered 4xx responses through n8n's HTTP helper and only treats a 5xx or no response as an Open-mode outage.
 
-| AxonFlow answers | Check Policy emits | Any other operation |
+| AxonFlow answers | Published 1.2.1 | Current source (unreleased) |
 |---|---|---|
-| 2xx | the response body as the item, unchanged | the response body (Wait for Approval: `approval_id` (the request UUID), `request_id`, `status`, `expires_at`) |
-| 403 with `allowed: false` (a policy deny) | published 1.2.1: an error that quotes the platform. Current source (unreleased): depends on **On Deny** (below), either the response body as the item (`allowed: false`, `block_reason`, `decision_id`, `policy_matches`) or an error `AxonFlow denied the request: <block_reason> (decision <id>)` | an error quoting the platform |
-| 401 | an error: `AxonFlow rejected the credential (HTTP 401): <platform text>. Check the Client ID and User Token ...`; when the platform says `user_token_required`, `AxonFlow refused the request (HTTP 401): this organization requires a per-user token, which the n8n node does not send: ...` | the same |
-| 402 | an error: `AxonFlow refused the request: a tier limit of this deployment was reached (HTTP 402): <platform text>` | the same |
-| 429 | an error: `AxonFlow refused the request: a rate limit was reached (HTTP 429, limit_type "...", resets at ..., retry after N s): <platform text>`, with each detail only when the platform sends it | the same |
-| 404 | an error quoting the platform | Wait for Approval: `AxonFlow has no approval queue at this endpoint (HTTP 404): /api/v1/hitl/queue is served by AxonFlow Enterprise only ...` |
-| any other 4xx, including a 403 without `allowed: false` | an error: `AxonFlow refused the request (HTTP <status>): <platform text>` | the same |
-| 5xx, or no answer | **Failure Mode: Open** (the default): an item `{_axonflow_unreachable: true, governance: "unavailable", cause: "http_503" or "no_response", error, operation}`. **Closed**: an error. | the same |
+| 2xx | the response body as the item, unchanged | the response body as the item, unchanged (Wait for Approval also normalizes its request UUID and status) |
+| 403 with `allowed: false` (a policy deny) | an n8n HTTP error; 1.2.1 has no **On Deny** option | Check Policy depends on **On Deny** (below): either the response body as the item (`allowed: false`, `block_reason`, `decision_id`, `policy_matches`) or an error `AxonFlow denied the request: <block_reason> (decision <id>)`; other operations error |
+| 401 | rethrows the n8n HTTP helper error | names either the rejected credential or the organization's required per-user-token rule and quotes the platform text |
+| 402 | rethrows the n8n HTTP helper error | an error naming the deployment tier limit and quoting the platform text |
+| 429 | rethrows the n8n HTTP helper error | an error naming the rate limit and, when supplied, its type, reset time, and retry delay |
+| 404 | rethrows the n8n HTTP helper error | an error quoting the platform; Wait for Approval additionally explains that the approval queue is Enterprise-only |
+| any other 4xx, including a 403 without `allowed: false` | rethrows the n8n HTTP helper error | an error naming the HTTP status and quoting the platform text |
+| 5xx, or no answer | **Failure Mode: Open** (the default): an item `{_axonflow_unreachable: true, error, operation}`. **Closed**: an error. | **Open**: an item `{_axonflow_unreachable: true, governance: "unavailable", cause: "http_503" or "no_response", error, operation}`. **Closed**: an error. |
 
 Every error is rethrown under both failure modes; only a 5xx or no answer is swallowed by **Open**. So n8n's **Retry On Fail** sees a 429, and **Continue On Fail** turns an error into an item with `error`.
 
@@ -46,7 +46,7 @@ Set On Deny explicitly to choose either behaviour on either version. Only the va
 
 **Branch on `allowed`.** With On Deny set to output, a deny, including one whose `block_reason` starts `unknown_constraint;` (a policy needs an attribute the request did not carry, and the rest of the text names the policy and the attribute) or `approval_required:`, arrives as an item with `allowed: false`, so an IF node on `{{ $json.allowed }}` takes its false branch and can read `block_reason`.
 
-**The Open fallback item has no `allowed` key, on purpose.** An IF on `{{ $json.allowed }} is true` does not take its true branch during an outage; check `{{ $json.governance }}` if the workflow should treat "AxonFlow did not decide" differently from a deny.
+**The Open fallback item has no `allowed` key, on purpose.** An IF on `{{ $json.allowed }} is true` does not take its true branch during an outage. With published 1.2.1, check `{{ $json._axonflow_unreachable }}`. The current unreleased source also supplies `governance: "unavailable"` and `cause` for more specific branching.
 
 **Approvals on AxonFlow v11.** On the planes this node calls, a policy that requires approval does not hold the request: Check Policy answers a deny whose `block_reason` starts `approval_required`. Holding for a reviewer happens on AxonFlow's workflow and multi-agent planes, not here. Wait for Approval creates an approval request on AxonFlow Enterprise and returns immediately; on Community the route does not exist and the node says so.
 
