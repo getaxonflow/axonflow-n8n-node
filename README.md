@@ -11,7 +11,7 @@ This package contributes a single `AxonFlow` node with four operations against a
 
 | Operation | Endpoint | When to use |
 |---|---|---|
-| **Check Policy** | `POST /api/v1/mcp/check-input` | Before a workflow takes a sensitive action — receive `{allowed, block_reason?}` and branch on it. A deny either stops the workflow with an error that names the reason, or is output as an item with `allowed: false`, set by **On Deny**; see **What the node emits** below. On a redact-not-block allow it also returns the masked text; see **Redaction: your workflow must use the masked text** below. |
+| **Check Policy** | `POST /api/v1/mcp/check-input` | Before a workflow takes a sensitive action — receive `{allowed, block_reason?}`. Published package 1.2.1 stops on a deny with n8n's HTTP error. The current source adds unreleased reason-aware errors and an **On Deny** option that can instead output `allowed: false`; see **What the node emits** below. On a redact-not-block allow it also returns the masked text; see **Redaction: your workflow must use the masked text** below. |
 | **Record Decision** | `POST /api/v1/audit/tool-call` | After a successful action — capture inputs, outputs, policies applied. |
 | **Audit Log** | `POST /api/v1/audit/tool-call` | From error branches — record the failed action with `success: false` and `error_message`. |
 | **Wait for Approval** | `POST /api/v1/hitl/queue` | AxonFlow Enterprise only. Creates an approval request and returns at once with its `approval_id`; it does not pause the workflow. Pair it with an n8n Wait node to pause. |
@@ -20,22 +20,24 @@ Plus a single `AxonFlow API` credential type holding the endpoint + Basic-auth (
 
 ## What the node emits
 
-The node reads the platform's HTTP status **and** its response body, and decides in one place what they mean.
+The current source reads the platform's HTTP status **and** its response body, and decides in one place what they mean. The published 1.2.1 package predates the detailed refusal messages and deny-output behavior below: it rethrows answered 4xx responses through n8n's HTTP helper and only treats a 5xx or no response as an Open-mode outage.
 
-| AxonFlow answers | Check Policy emits | Any other operation |
+| AxonFlow answers | Published 1.2.1 | Current source (unreleased) |
 |---|---|---|
-| 2xx | the response body as the item, unchanged | the response body (Wait for Approval: `approval_id` (the request UUID), `request_id`, `status`, `expires_at`) |
-| 403 with `allowed: false` (a policy deny) | depends on **On Deny** (below): the response body as the item (`allowed: false`, `block_reason`, `decision_id`, `policy_matches`), or an error `AxonFlow denied the request: <block_reason> (decision <id>)` | an error quoting the platform |
-| 401 | an error: `AxonFlow rejected the credential (HTTP 401): <platform text>. Check the Client ID and User Token ...`; when the platform says `user_token_required`, `AxonFlow refused the request (HTTP 401): this organization requires a per-user token, which the n8n node does not send: ...` | the same |
-| 402 | an error: `AxonFlow refused the request: a tier limit of this deployment was reached (HTTP 402): <platform text>` | the same |
-| 429 | an error: `AxonFlow refused the request: a rate limit was reached (HTTP 429, limit_type "...", resets at ..., retry after N s): <platform text>`, with each detail only when the platform sends it | the same |
-| 404 | an error quoting the platform | Wait for Approval: `AxonFlow has no approval queue at this endpoint (HTTP 404): /api/v1/hitl/queue is served by AxonFlow Enterprise only ...` |
-| any other 4xx, including a 403 without `allowed: false` | an error: `AxonFlow refused the request (HTTP <status>): <platform text>` | the same |
-| 5xx, or no answer | **Failure Mode: Open** (the default): an item `{_axonflow_unreachable: true, governance: "unavailable", cause: "http_503" or "no_response", error, operation}`. **Closed**: an error. | the same |
+| 2xx | the response body as the item, unchanged | the response body as the item, unchanged (Wait for Approval also normalizes its request UUID and status) |
+| 403 with `allowed: false` (a policy deny) | an n8n HTTP error; 1.2.1 has no **On Deny** option | Check Policy depends on **On Deny** (below): either the response body as the item (`allowed: false`, `block_reason`, `decision_id`, `policy_matches`) or an error `AxonFlow denied the request: <block_reason> (decision <id>)`; other operations error |
+| 401 | rethrows the n8n HTTP helper error | names either the rejected credential or the organization's required per-user-token rule and quotes the platform text |
+| 402 | rethrows the n8n HTTP helper error | an error naming the deployment tier limit and quoting the platform text |
+| 429 | rethrows the n8n HTTP helper error | an error naming the rate limit and, when supplied, its type, reset time, and retry delay |
+| 404 | rethrows the n8n HTTP helper error | an error quoting the platform; Wait for Approval additionally explains that the approval queue is Enterprise-only |
+| any other 4xx, including a 403 without `allowed: false` | rethrows the n8n HTTP helper error | an error naming the HTTP status and quoting the platform text |
+| 5xx, or no answer | **Failure Mode: Open** (the default): an item `{_axonflow_unreachable: true, error, operation}`. **Closed**: an error. | **Open**: an item `{_axonflow_unreachable: true, governance: "unavailable", cause: "http_503" or "no_response", error, operation}`. **Closed**: an error. |
 
 Every error is rethrown under both failure modes; only a 5xx or no answer is swallowed by **Open**. So n8n's **Retry On Fail** sees a 429, and **Continue On Fail** turns an error into an item with `error`.
 
-**On Deny: stop, or output an item to branch on.** Check Policy has an **On Deny** option, and its default depends on the node's version:
+**On Deny is not in the published 1.2.1 package.** In 1.2.1 a policy deny stops the workflow with an error. The following behavior describes the current source and is available only after a later package containing node version 2 is published.
+
+**Upcoming On Deny behavior: stop, or output an item to branch on.** Check Policy has an **On Deny** option, and its default depends on the node's version:
 
 - **A node added from this release on (node version 2)** defaults to **Output an Item to Branch On**. Put an IF on `{{ $json.allowed }}` before any action the policy guards: without one, the workflow continues past a deny.
 - **A node in a workflow saved before this release (node version 1)** keeps **Stop the Workflow With an Error**, which is what a deny did on AxonFlow v8 and later (the platform answers a deny with HTTP 403, and the node stopped on it). On those platforms a saved workflow keeps its behaviour; what changes is the error text, which now names the reason and the decision instead of n8n's `Forbidden - perhaps check your credentials?` (and so does the `error` a Continue On Fail item carries). Two exceptions, both in the stopping direction: against an AxonFlow older than v8, which answered a deny with HTTP 200 and `allowed: false`, a version-1 node used to output that item and now stops; and a version-1 node is not upgraded to version 2 unless you replace it.
@@ -44,9 +46,9 @@ Set On Deny explicitly to choose either behaviour on either version. Only the va
 
 **Branch on `allowed`.** With On Deny set to output, a deny, including one whose `block_reason` starts `unknown_constraint;` (a policy needs an attribute the request did not carry, and the rest of the text names the policy and the attribute) or `approval_required:`, arrives as an item with `allowed: false`, so an IF node on `{{ $json.allowed }}` takes its false branch and can read `block_reason`.
 
-**The Open fallback item has no `allowed` key, on purpose.** An IF on `{{ $json.allowed }} is true` does not take its true branch during an outage; check `{{ $json.governance }}` if the workflow should treat "AxonFlow did not decide" differently from a deny.
+**The Open fallback item has no `allowed` key, on purpose.** An IF on `{{ $json.allowed }} is true` does not take its true branch during an outage. With published 1.2.1, check `{{ $json._axonflow_unreachable }}`. The current unreleased source also supplies `governance: "unavailable"` and `cause` for more specific branching.
 
-**Approvals on AxonFlow v11.** On the planes this node calls, a policy that requires approval does not hold the request: Check Policy answers a deny whose `block_reason` starts `approval_required`. Holding for a reviewer happens on AxonFlow's workflow and multi-agent planes, not here. Wait for Approval creates an approval request on AxonFlow Enterprise and returns immediately; on Community the route does not exist and the node says so.
+**Approvals on AxonFlow v11.** On the planes this node calls, a policy that requires approval does not hold the request: Check Policy answers a deny whose `block_reason` starts `approval_required`. Holding for a reviewer happens on AxonFlow's workflow and multi-agent planes, not here. Wait for Approval creates an approval request on AxonFlow Enterprise and returns immediately. On Community the route does not exist: published 1.2.1 surfaces n8n's HTTP 404 error, while the current unreleased source adds an edition-specific explanation.
 
 ## Redaction: your workflow must use the masked text
 
@@ -117,13 +119,15 @@ Installing into `~/.n8n/nodes` (`cd ~/.n8n/nodes && npm install @axonflow/n8n-no
 
 ## Configure the credential
 
+If your organization is eligible for the current Hosted Starter cohort, first [verify your email and activate the account in the Portal](https://portal.try.getaxonflow.com/hosted/start). If enrollment is not offered, use a self-hosted AxonFlow endpoint or wait until Hosted enrollment opens more broadly. Download the Hosted API link command there, run it locally, and approve its device code in the signed-in owner session. It saves a protected `~/.config/axonflow/hosted-api.json` file with a separate revocable client credential. Copy its `endpoint`, `clientId`, and `clientSecret` into the n8n credential fields below. The node consumes this linked credential; it does not create a Hosted tenant or call anonymous `/api/v1/register`. Do not use a Portal password or Stripe value as the User Token. For governed Hosted workflows, choose **Failure Mode: Closed** on the node so an unreachable policy service stops the call; Open is the node's default. An answered 402 or 429 is a refusal, so restore the plan or wait for the allowance reset before retrying.
+
 **Credentials > New > AxonFlow API.**
 
 | Field | Description |
 |---|---|
 | Endpoint | Base URL of your AxonFlow Agent. SaaS: `https://try.getaxonflow.com`. Self-hosted: typically port 8080. |
-| Client ID | Your tenant identifier. |
-| User Token | Sent as the password half of HTTP Basic auth. Stored encrypted in n8n. |
+| Client ID | Your tenant identifier; for Hosted, `clientId` from the linked API credential. |
+| User Token | The linked API client `clientSecret` for Hosted, sent as the password half of HTTP Basic auth. This field is stored encrypted in n8n; it is not the Portal login or a per-user token. |
 
 ## Quickstart
 
@@ -131,7 +135,7 @@ Installing into `~/.n8n/nodes` (`cd ~/.n8n/nodes && npm install @axonflow/n8n-no
 2. Create an **AxonFlow API** credential with your endpoint + Client ID + User Token.
 3. Add an **AxonFlow** node to your workflow.
 4. Pick an operation:
-   - **Check Policy** — submit a proposed action; with On Deny set to output (the default for a new node), branch on `allowed: true/false`.
+   - **Check Policy** — submit a proposed action. Published 1.2.1 stops on a deny. A later package containing node version 2 will expose **On Deny**; when set to output, branch on `allowed: true/false`.
    - **Record Decision** — log the outcome of a downstream action.
    - **Audit Log** — log a failed action from an error branch.
    - **Wait for Approval** — create a HITL request (AxonFlow Enterprise); it returns at once, so pair it with a Wait node to pause.
@@ -139,8 +143,8 @@ Installing into `~/.n8n/nodes` (`cd ~/.n8n/nodes && npm install @axonflow/n8n-no
 
 ## Three things to know
 
-1. **Bearer Auth > Header Auth.** This credential uses the Header Auth pattern (Authorization built inline) rather than n8n's built-in Bearer Auth class, which silently drops the header in some n8n versions ([n8n#15261](https://github.com/n8n-io/n8n/issues/15261)).
-2. **Idempotency by default.** Every operation sends `Idempotency-Key: {executionId}-{itemIndex}-{runIndex}-{nodeName}-{requestHash}` so n8n's `Retry on Fail` doesn't double-record: a retry of the same call sends the same key (unless a parameter's expression changes between attempts, such as `{{ $now }}`, which changes the request body and so the key). The run index and a hash of the request body are part of it because AxonFlow replays its stored answer for a repeated key without comparing request bodies, so inside a loop a key without them would hand a later iteration the decision made for an earlier statement. (Keys changed shape in this release, so a retry that spans an upgrade of the node is not deduplicated once.) AxonFlow accepts only the characters `A-Z a-z 0-9 _ . : - /` in a key, up to 256 of them, so each other character of the node name becomes `_` and a short hash of the original name follows it (a name already inside that set is used as it is), and a key longer than 256 characters is cut and ends with a hash. Override at the node parameter level if you need a domain-specific key; a key you set is sent exactly as you wrote it, so keeping it inside that set is up to you, and AxonFlow refuses one outside it with HTTP 400, which the node quotes.
+1. **HTTP Basic auth.** Published 1.2.1 and the current source use n8n's generic Basic auth credential: Client ID is the username and User Token is the password. n8n builds the `Authorization` header; the node does not build it inline.
+2. **Idempotency by default.** Published 1.2.1 sends `Idempotency-Key: {executionId}-{itemIndex}-{nodeName}`. The current unreleased source changes the default to `{executionId}-{itemIndex}-{runIndex}-{nodeName}-{requestHash}` so n8n's `Retry on Fail` doesn't double-record while different loop iterations or request bodies do not reuse an earlier decision: a retry of the same call sends the same key unless a parameter expression changes, such as `{{ $now }}` changing the request body. The run index and request hash matter because AxonFlow replays its stored answer for a repeated key without comparing request bodies. A retry that spans an upgrade between those formats is not deduplicated once. The unreleased source also normalizes the node name and caps the key at 256 characters to match the platform alphabet `A-Z a-z 0-9 _ . : - /`. Override at the node parameter level if you need a domain-specific key; a key you set is sent exactly as written, so keeping it inside that set is up to you.
 3. **HITL pairs with the Wait node.** `Wait for Approval` creates the AxonFlow approval entry (Enterprise) and returns immediately; it does not pause anything itself. Pair it with a downstream Wait node configured for **On Webhook Call** mode, which is what pauses the workflow. As of platform v8.1.0+, pass the Wait node's webhook URL as `notify_url` in the HITL queue request and AxonFlow will POST to it automatically on approval/rejection — no polling sidecar needed. For self-hosted deployments on v8.0.x, two manual paths work: (a) run a small **polling sidecar** that watches `GET /api/v1/hitl/queue/{id}` and POSTs to the Wait node's webhook URL when status changes, or (b) have a reviewer trigger the resume URL manually from the portal. See the [n8n integration docs](https://docs.getaxonflow.com/docs/integration/n8n/#hitl) for details.
 
 ## Client identification
@@ -151,7 +155,7 @@ Every call this node makes to AxonFlow carries `X-Axonflow-Client: n8n-plugin/<v
 
 ## Example workflow
 
-[`examples/governed-loan-workflow.json`](./examples/governed-loan-workflow.json) — an importable workflow that:
+[`examples/governed-loan-workflow.json`](./examples/governed-loan-workflow.json) is an importable preview for the later package containing node version 2. It is **not compatible with published 1.2.1**, which stops on a denied Check Policy response before an `allowed=false` item can reach an IF node. The preview workflow:
 
 1. Receives a loan request via HTTP trigger,
 2. Calls **Check Policy** on the amount,
