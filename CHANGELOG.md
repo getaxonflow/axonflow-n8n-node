@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- npm publication now waits for the mandatory runtime E2E job, so a tagged
+  build cannot become public while its real n8n workflow verification is still
+  running or has failed.
 - A 200 policy deny from older AxonFlow versions is handled with the same deny
   semantics as the current 403 response.
 - Runtime verification now proves that n8n installed this checkout, reads real

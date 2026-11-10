@@ -207,7 +207,10 @@ jobs:
         run: docker compose down -v
 
   publish:
-    needs: [preflight, lint, build-and-test]
+    # Keep the public write behind every release proof. In particular,
+    # runtime-e2e installs and drives this tagged checkout through real n8n;
+    # publishing in parallel with that job can make a failing build public.
+    needs: [preflight, lint, build-and-test, runtime-e2e]
     runs-on: ubuntu-latest
 
     steps:
